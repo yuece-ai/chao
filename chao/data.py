@@ -64,10 +64,8 @@ def equity_files(root):
                 yield path.stem.upper(), path
 
 
-def load_prices(config, symbol, diagnostic=False):
+def load_prices(config, symbol):
     frame = read_day(symbol_path(config['raw_root'], symbol))
-    if diagnostic:
-        return frame
     root = config.get('qfq_root')
     if not root:
         raise MissingInput('TODO: verified forward-adjusted OHLC input (qfq_root)')

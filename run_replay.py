@@ -7,7 +7,7 @@ import argparse, json, os
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import pandas as pd
-from chao.data import equity_files, read_day, symbol_path, load_prices
+from chao.data import equity_files, symbol_path, load_prices
 from chao.formulas import strategies, signals
 from chao.replay import replay
 from chao.reference import read_references, score
@@ -48,14 +48,7 @@ def init_worker(raw_root, source_file, names, index_paths, config):
     G['strategies']=strategies(source_file); G['names']=names; G['config']=config
     G['index_symbols']={k: ('SH' if k in ('999999','000688') else 'BJ' if k=='899050' else 'SZ')+k for k in index_paths}
     G['indices_root']=config.get('qfq_root')
-    G['indices']={k:read_day(v)['close'] for k,v in index_paths.items()}
-    if config.get('formula_adjustment') == 'qfq' or config.get('formula_index_adjustment') == 'qfq':
-        for k,v in index_paths.items():
-            sym=('SH' if k in ('999999','000688') else 'BJ' if k=='899050' else 'SZ')+k
-            try: G['indices'][k]=load_prices(config,sym)['close']
-            except Exception: pass
-    G['indexc']=G['indices']['999999']
-    G['raw_root']=raw_root
+    G['indices']={k:load_prices(config,G['index_symbols'][k])['close'] for k in index_paths}
     # Historical total share capital (FINANCE(1)), reconstructed from TDX
     # GBBQ category-5 snapshots. Values are stored in 10-thousand shares.
     fp=config.get('finance_path')
@@ -68,30 +61,15 @@ def task(item):
     try:
         full_symbol=Path(path).stem.upper()
         strategy_config = _strategy_qfq_config(G['config'], sid)
-        # Formula and execution are both forward-adjusted in the accepted
-        # data path. Diagnostics may explicitly use a different input root.
-        raw_frame=read_day(symbol_path(G['raw_root'],full_symbol))
-        frame=load_prices(strategy_config,full_symbol,diagnostic=strategy_config['adjustment']=='source_values')
-        formula_config=strategy_config
-        if strategy_config.get('formula_qfq_root'):
-            formula_config={**strategy_config,'qfq_root':strategy_config['formula_qfq_root']}
-        if len(frame)<260 or len(raw_frame)<260: return sid,symbol,[],{'error':'insufficient history'}
-        if full_symbol.startswith('BJ'):
-            indexc=G['indices'].get('899050', G['indexc'])
-        elif full_symbol.startswith(('SZ300','SZ301','SZ302')):
-            indexc=G['indices']['399006']
-        elif full_symbol.startswith(('SH688','SH689')):
-            indexc=G['indices']['000688']
-        else:
-            indexc=G['indices']['399001'] if full_symbol.startswith('SZ') else G['indexc']
-        formula_frame = raw_frame if G['config'].get('formula_adjustment','source_values') == 'source_values' else load_prices(formula_config,full_symbol)
+        frame=load_prices(strategy_config,full_symbol)
+        if len(frame)<260: return sid,symbol,[],{'error':'insufficient history'}
         shares=G['finance'].get(full_symbol[2:], 0)
         if shares:
             fs=pd.Series({pd.Timestamp(d):float(v) for d,v in shares.items()})
-            shares=fs.reindex(formula_frame.index, method='ffill').fillna(0.0)*10000.0
-        indices = _indices_for_config(formula_config)
+            shares=fs.reindex(frame.index, method='ffill').fillna(0.0)*10000.0
+        indices = _indices_for_config(strategy_config)
         indexc = indices['899050'] if full_symbol.startswith('BJ') else indices['000688'] if full_symbol.startswith(('SH688','SH689')) else indices['399006'] if full_symbol.startswith(('SZ300','SZ301','SZ302')) else indices['399001'] if full_symbol.startswith('SZ') else indices['999999']
-        sig=signals(G['strategies'][sid],formula_frame,indices,indexc,G['names'].get(symbol,''),shares)
+        sig=signals(G['strategies'][sid],frame,indices,indexc,G['names'].get(symbol,''),shares)
         events,summary=replay(frame,sig,strategy_config)
         for e in events: e.update(strategy=sid,code=symbol)
         return sid,symbol,events,summary
