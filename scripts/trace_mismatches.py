@@ -1,0 +1,73 @@
+"""Explain remaining event mismatches using original formula leaf values.
+
+Reference rows are used solely for choosing dates to inspect and scoring;
+no reference value changes a bar, signal or execution result.
+"""
+import argparse, ast, json
+from collections import defaultdict, Counter
+from concurrent.futures import ProcessPoolExecutor
+from pathlib import Path
+import pandas as pd
+from chao.formulas import strategies, formula_environment, evaluate, parse
+from chao.reference import read_references
+from chao.data import load_prices
+
+G={}
+def initialize(cfg):
+    G['cfg']=cfg; G['strategies']=strategies('origin/策略源码.txt')
+    G['idx']={k:load_prices(cfg,sym).close for k,sym in [('399001','SZ399001'),('399006','SZ399006'),('999999','SH999999'),('899050','BJ899050'),('000688','SH000688')]}
+    G['finance']=json.loads(Path(cfg['finance_path']).read_text())
+
+def value(v,d):
+    if hasattr(v,'loc'): v=v.loc[d]
+    if pd.isna(v): return None
+    if hasattr(v,'item'):return v.item()
+    return v
+
+def inspect(job):
+    sid,code,rows=job;cfg=G['cfg']; sym=('SH' if code.startswith('6') else 'BJ' if code.startswith('9') else 'SZ')+code
+    root=cfg.get('qfq_root_by_strategy',{}).get(str(sid))
+    if root:
+        cfg={**cfg,'qfq_root':root}
+    idx=G['idx'] if not root else {k:load_prices(cfg,s).close for k,s in [('399001','SZ399001'),('399006','SZ399006'),('999999','SH999999'),('899050','BJ899050'),('000688','SH000688')]}
+    idxcode='899050' if sym.startswith('BJ') else '000688' if sym.startswith(('SH688','SH689')) else '399006' if sym.startswith(('SZ300','SZ301','SZ302')) else '399001' if sym.startswith('SZ') else '999999'
+    f=load_prices(cfg,sym);shares=G['finance'].get(code,{})
+    if shares: shares=pd.Series({pd.Timestamp(d):float(v) for d,v in shares.items()}).sort_index().reindex(f.index,method='ffill').fillna(0)*10000
+    else:shares=0
+    st=G['strategies'][sid];env=formula_environment(st,f,idx,idx[idxcode],rows[0].get('name',''),shares)
+    report=[]
+    for r in rows:
+        d=pd.Timestamp(r['date']);side='买入条件' if r['direction']=='买开' else '卖出条件'; point={'strategy':sid,'code':code,'date':r['date'],'direction':r['direction'],'kind':r['kind'],'indexc':idxcode}
+        if d not in f.index:point['error']='date missing';report.append(point);continue
+        point['formula_condition']=value(env[side],d);point['bar']={k:value(f[k],d) for k in ['close','high','low','amount']};point['failed_assignments']=[];point['comparisons']=[]
+        for key,expr in st['assignments']:
+            if key=='A' or key=='买入条件':continue
+            if side=='卖出条件' and key!='卖出条件':continue
+            if side=='买入条件' and key=='卖出条件':continue
+            if not bool(value(env[key],d)):
+                point['failed_assignments'].append(key)
+                for node in ast.walk(parse(expr)):
+                    if isinstance(node,ast.Compare) and not bool(value(evaluate(node,env),d)):
+                        operands=[value(evaluate(x,env),d) for x in [node.left,*node.comparators]]
+                        point['comparisons'].append({'assignment':key,'expression':ast.unparse(node),'values':operands})
+        report.append(point)
+    return report
+
+def main():
+    p=argparse.ArgumentParser();p.add_argument('--config',default='config.json');p.add_argument('--reports',nargs='+',required=True);p.add_argument('--out',default='reports/mismatch-trace.json');p.add_argument('--workers',type=int,default=32);a=p.parse_args();cfg=json.loads(Path(a.config).read_text());ref=read_references('origin');names={r['code']:r['name'] for rows in ref.values() for r in rows};jobs=defaultdict(list)
+    # A selected-strategy report must not overwrite successful strategies with
+    # the zero counts of strategies that were never run.
+    collected={}
+    for rp in a.reports:
+        x=json.loads(Path(rp).read_text())
+        for sid,s in x['strategies'].items():
+            if s['events']>0: collected[int(sid)]=s
+    for sid,s in collected.items():
+        for kind in ['missing','extra']:
+            for code,date,direction in s['reference_score'][kind]:jobs[sid,code].append({'date':date,'direction':direction,'kind':kind,'name':names.get(code,'')})
+    out=[]
+    with ProcessPoolExecutor(max_workers=a.workers,initializer=initialize,initargs=(cfg,)) as pool:
+        for rows in pool.map(inspect,[(sid,code,rows) for (sid,code),rows in jobs.items()]):out.extend(rows)
+    Path(a.out).write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False))
+    print(json.dumps({'events':len(out),'failed_conditions':sum(r.get('formula_condition') is False for r in out),'failed_assignments':Counter(k for r in out for k in r.get('failed_assignments',[]))},ensure_ascii=False))
+if __name__=='__main__':main()

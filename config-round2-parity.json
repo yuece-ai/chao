@@ -1,0 +1,24 @@
+{
+  "raw_root": "/home/fikgol/data/tdx/cryptd-workspace/data/tdx/raw/vipdoc",
+  "reference_root": "origin",
+  "start": "2010-01-01",
+  "end": "2026-09-30",
+  "initial_cash": 1000000,
+  "commission_rate": 0.0001,
+  "minimum_commission": 5,
+  "slippage": 0.003,
+  "workers": 48,
+  "adjustment": "qfq",
+  "formula_adjustment": "qfq",
+  "qfq_root": "/home/fikgol/data/tdx/qfq-round2-current",
+  "facts_path": null,
+  "indexc_map_path": null,
+  "position_rule": null,
+  "terminal_policy": "flat",
+  "price_provenance": "tdx_raw_plus_official_gbbq_affine_qfq_with_board_index_mapping",
+  "report_dir": "reports/round2-parity",
+  "finance_path": "/home/fikgol/data/tdx/finance.json",
+  "qfq_root_by_strategy": {
+    "6": "/home/fikgol/data/tdx/qfq-round2-s6"
+  }
+}

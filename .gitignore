@@ -1,0 +1,10 @@
+# Generated replay output; rebuild with run_replay.py.
+/reports/
+# Repo-local worktrees.
+/.dev/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+# Nix build outputs.
+result
+result-*
