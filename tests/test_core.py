@@ -50,3 +50,11 @@ def test_score_reports_accounting_fields():
  assert result['matched']==1 and result['accounting_matched']==1
  result=score([row],[{**row,'quantity':11}])
  assert result['accounting_matched']==0 and result['accounting_mismatches'][0]['fields'][0]['field']=='quantity'
+
+def test_buy_and_sell_on_the_same_bar():
+ # Strategy 5, 300475 on 2020-02-17: both conditions hold, TDX buys then sells.
+ dates=pd.date_range('2020-01-01',periods=2)
+ frame=pd.DataFrame({'close':[7.61,7.0]},index=dates)
+ sig=pd.DataFrame({'buy':[True,False],'sell':[True,True]},index=dates)
+ events,_=replay(frame,sig,ReplaySpec('2020-01-01','2020-01-02',1000000.0,0.0005,0.0003))
+ assert [(e['date'],e['direction']) for e in events]==[('2020-01-01','买开'),('2020-01-01','卖平')]

@@ -66,14 +66,16 @@ def replay(frame, signals, spec):
     cash = f32(spec.initial_cash); position = None; events = []; curve = []
     for date, row in bars.iterrows():
         sig = signals.loc[date]
-        if position and sig.sell:
-            cash, fields = sell_fill(position, row.close, spec); position = None
-            events.append(dict(date=date.strftime('%Y-%m-%d'), direction=SELL, **fields))
-        elif not position and sig.buy:
+        # TDX checks the buy before the sell, so a bar that meets both
+        # conditions opens and closes a position at the same close.
+        if not position and sig.buy:
             fill = buy_fill(cash, row.close, spec)
             if fill:
                 position, cash, fields = fill
                 events.append(dict(date=date.strftime('%Y-%m-%d'), direction=BUY, **fields))
+        if position and sig.sell:
+            cash, fields = sell_fill(position, row.close, spec); position = None
+            events.append(dict(date=date.strftime('%Y-%m-%d'), direction=SELL, **fields))
         curve.append((date, cash + (position.quantity * row.close if position else 0.0)))
     if position:
         date = bars.index[-1]

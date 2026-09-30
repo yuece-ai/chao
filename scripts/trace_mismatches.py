@@ -44,12 +44,17 @@ def inspect(job):
             if key=='A' or key=='买入条件':continue
             if side=='卖出条件' and key!='卖出条件':continue
             if side=='买入条件' and key=='卖出条件':continue
-            if not bool(value(env[key],d)):
-                point['failed_assignments'].append(key)
-                for node in ast.walk(parse(expr)):
-                    if isinstance(node,ast.Compare) and not bool(value(evaluate(node,env),d)):
-                        operands=[value(evaluate(x,env),d) for x in [node.left,*node.comparators]]
-                        point['comparisons'].append({'assignment':key,'expression':ast.unparse(node),'values':operands})
+            if not bool(value(env[key],d)): point['failed_assignments'].append(key)
+            for node in ast.walk(parse(expr)):
+                if not isinstance(node,ast.Compare): continue
+                operands=[value(evaluate(x,env),d) for x in [node.left,*node.comparators]]
+                if 'NAMELIKE' in ast.unparse(node) or any(v is None or isinstance(v,bool) for v in operands): continue
+                a,b=operands[0],operands[-1]
+                margin=abs(a-b)/max(abs(b),1e-12)
+                point['comparisons'].append({'assignment':key,'expression':ast.unparse(node),
+                    'values':operands,'holds':bool(value(evaluate(node,env),d)),'margin':margin})
+        point['comparisons'].sort(key=lambda c:c['margin'])
+        point['comparisons']=point['comparisons'][:4]
         report.append(point)
     return report
 
