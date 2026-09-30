@@ -12,21 +12,32 @@ class MissingInput(ValueError):
     pass
 
 
-def market_for_code(code):
-    """Return the exchange for a six-digit code without losing identity."""
-    code = str(code).upper()
-    if code.startswith(("43", "83", "87", "92")):
-        return "BJ"
-    if code.startswith("6") or code in {"999999", "000688"}:
-        return "SH"
-    if code.startswith(("0", "3")) or code in {"399001", "399006"}:
-        return "SZ"
-    raise ValueError(f"cannot infer exchange for code {code!r}")
+# Index symbols used by the formulas.  000688 is both a Shenzhen stock and
+# the Shanghai STAR 50 index, so indices are always spelled out in full.
+INDEX_SYMBOLS = {'999999': 'SH999999', '399001': 'SZ399001', '399006': 'SZ399006',
+                 '000688': 'SH000688', '899050': 'BJ899050'}
 
 
-def qualified_symbol(code):
-    code = str(code).upper()
-    return market_for_code(code) + code
+def equity_symbol(code):
+    """Exchange-qualified symbol for a six-digit A-share stock code."""
+    if code.startswith('6'):
+        return 'SH' + code
+    if code.startswith(('0', '3')):
+        return 'SZ' + code
+    if code.startswith(('43', '83', '87', '92')):
+        return 'BJ' + code
+    raise ValueError(f'cannot infer exchange for stock code {code!r}')
+
+
+def board_index(symbol):
+    """Index code TDX binds to INDEXC for a stock's board."""
+    if symbol.startswith('BJ'):
+        return '899050'
+    if symbol.startswith(('SH688', 'SH689')):
+        return '000688'
+    if symbol.startswith(('SZ300', 'SZ301', 'SZ302')):
+        return '399006'
+    return '399001' if symbol.startswith('SZ') else '999999'
 
 
 def read_day(path):
@@ -59,7 +70,7 @@ def equity_files(root):
         for path in sorted((Path(root) / market / 'lday').glob('*.day')):
             code = path.stem[2:]
             if (market == 'sh' and code.startswith(('600', '601', '603', '605', '688', '689'))
-                or market == 'sz' and code.startswith(('000', '001', '002', '003', '300', '301'))
+                or market == 'sz' and code.startswith(('000', '001', '002', '003', '300', '301', '302'))
                 or market == 'bj' and code.startswith(('43', '83', '87', '92'))):
                 yield path.stem.upper(), path
 
@@ -68,15 +79,8 @@ def load_prices(config, symbol):
     frame = read_day(symbol_path(config['raw_root'], symbol))
     root = config.get('qfq_root')
     if not root:
-        raise MissingInput('TODO: verified forward-adjusted OHLC input (qfq_root)')
-    # Exchange is part of the identity: SZ000688 is a stock, SH000688
-    # is the STAR 50 index. Always prefer an exchange-qualified file.
+        raise MissingInput('qfq_root is required')
     qpath = Path(root) / f'{symbol}.csv'
-    if not qpath.exists() and config.get('allow_legacy_unqualified_qfq', False):
-        # This opt-in is only for old stock roots. Never use it for indices,
-        # especially 000688 which exists on both SH and SZ.
-        if symbol[2:] not in {'999999', '000688', '399001', '399006', '899050'}:
-            qpath = Path(root) / f'{symbol[2:]}.csv'
     if not qpath.exists():
         raise MissingInput(f'Missing exchange-qualified adjusted prices: {qpath}')
     qfq = pd.read_csv(qpath, parse_dates=['date']).set_index('date')
