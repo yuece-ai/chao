@@ -1,6 +1,7 @@
 import pandas as pd
 import pytest
 from chao.data import board_index, equity_symbol
+from chao.gbbq import total_shares
 from chao.qfq import ex_rights, field, forward_adjust
 
 
@@ -43,3 +44,8 @@ def test_gbbq_float32_fields_are_read_at_three_decimals():
     ('830799', 'BJ830799', '899050'), ('920580', 'BJ920580', '899050')])
 def test_equity_symbol_and_board_index(code, symbol, index):
     assert equity_symbol(code) == symbol and board_index(symbol) == index
+
+
+def test_total_shares_reads_share_capital_changes_only():
+    records = [gbbq('2020-01-02', c4=12.5, category=5), gbbq('2020-01-03', c1=5)]
+    assert total_shares(records) == {'2020-01-02': 12.5}

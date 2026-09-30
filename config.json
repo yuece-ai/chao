@@ -1,7 +1,7 @@
 {
   "raw_root": "/home/fikgol/data/tdx/cryptd-workspace/data/tdx/raw/vipdoc",
   "reference_root": "origin",
-  "finance_path": "/home/fikgol/data/tdx/finance.json",
+  "gbbq_path": "/home/fikgol/data/tdx/gbbq.json",
   "start": "2010-01-01",
   "end": "2026-09-30",
   "initial_cash": 1000000,

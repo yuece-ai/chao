@@ -8,6 +8,7 @@ import pandas as pd
 from chao.data import (INDEX_SYMBOLS, MissingInput, board_index, equity_files,
                        equity_symbol, load_prices)
 from chao.formulas import strategies, signals
+from chao.gbbq import load_gbbq, total_shares
 from chao.replay import ReplaySpec, replay
 from chao.reference import read_references, score
 
@@ -38,8 +39,8 @@ def indices_for(config):
 
 
 def share_capital(code, index):
-    """FINANCE(1): total shares, stored in units of 10,000 shares."""
-    history = G['finance'].get(code)
+    """FINANCE(1) in shares on each bar."""
+    history = total_shares(G['gbbq'].get(code, []))
     if not history:
         return None
     series = pd.Series({pd.Timestamp(d): float(v) for d, v in history.items()}).sort_index()
@@ -49,7 +50,7 @@ def share_capital(code, index):
 def init_worker(config, names):
     G.update(config=config, names=names, strategies=strategies(SOURCE),
              spec=replay_spec(config), indices={})
-    G['finance'] = json.loads(Path(config['finance_path']).read_text())
+    G['gbbq'] = load_gbbq(config['gbbq_path'])
 
 
 def task(item):

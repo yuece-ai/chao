@@ -10,13 +10,14 @@ from pathlib import Path
 import pandas as pd
 from chao.formulas import strategies, formula_environment, evaluate, parse
 from chao.reference import read_references
+from chao.gbbq import load_gbbq, total_shares
 from chao.data import INDEX_SYMBOLS, board_index, equity_symbol, load_prices
 
 G={}
 def initialize(cfg):
     G['cfg']=cfg; G['strategies']=strategies('origin/策略源码.txt')
     G['idx']={k:load_prices(cfg,sym).close for k,sym in INDEX_SYMBOLS.items()}
-    G['finance']=json.loads(Path(cfg['finance_path']).read_text())
+    G['gbbq']=load_gbbq(cfg['gbbq_path'])
 
 def value(v,d):
     if hasattr(v,'loc'): v=v.loc[d]
@@ -31,7 +32,7 @@ def inspect(job):
         cfg={**cfg,'qfq_root':root}
     idx=G['idx'] if not root else {k:load_prices(cfg,s).close for k,s in INDEX_SYMBOLS.items()}
     idxcode=board_index(sym)
-    f=load_prices(cfg,sym);shares=G['finance'].get(code,{})
+    f=load_prices(cfg,sym);shares=total_shares(G['gbbq'].get(code,[]))
     if shares: shares=pd.Series({pd.Timestamp(d):float(v) for d,v in shares.items()}).sort_index().reindex(f.index,method='ffill').fillna(0)*10000
     else:shares=None
     st=G['strategies'][sid];env=formula_environment(st,f,idx,idx[idxcode],rows[0].get('name',''),shares)

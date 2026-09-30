@@ -9,16 +9,14 @@ from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from chao.data import INDEX_SYMBOLS, equity_files, read_day, symbol_path
+from chao.gbbq import load_gbbq
 from chao.qfq import PRICE_COLUMNS, ex_rights, forward_adjust
 
 G = {}
 
 
 def init(raw_root, out, as_of, gbbq_path):
-    records = defaultdict(list)
-    for row in json.loads(Path(gbbq_path).read_text()):
-        records[row['Code']].append(row)
-    G.update(raw=raw_root, out=Path(out), as_of=as_of, records=records)
+    G.update(raw=raw_root, out=Path(out), as_of=as_of, records=load_gbbq(gbbq_path))
 
 
 def build(item):
