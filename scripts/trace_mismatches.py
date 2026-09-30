@@ -10,12 +10,12 @@ from pathlib import Path
 import pandas as pd
 from chao.formulas import strategies, formula_environment, evaluate, parse
 from chao.reference import read_references
-from chao.data import load_prices
+from chao.data import INDEX_SYMBOLS, board_index, equity_symbol, load_prices
 
 G={}
 def initialize(cfg):
     G['cfg']=cfg; G['strategies']=strategies('origin/策略源码.txt')
-    G['idx']={k:load_prices(cfg,sym).close for k,sym in [('399001','SZ399001'),('399006','SZ399006'),('999999','SH999999'),('899050','BJ899050'),('000688','SH000688')]}
+    G['idx']={k:load_prices(cfg,sym).close for k,sym in INDEX_SYMBOLS.items()}
     G['finance']=json.loads(Path(cfg['finance_path']).read_text())
 
 def value(v,d):
@@ -25,15 +25,15 @@ def value(v,d):
     return v
 
 def inspect(job):
-    sid,code,rows=job;cfg=G['cfg']; sym=('SH' if code.startswith('6') else 'BJ' if code.startswith('9') else 'SZ')+code
+    sid,code,rows=job;cfg=G['cfg']; sym=equity_symbol(code)
     root=cfg.get('qfq_root_by_strategy',{}).get(str(sid))
     if root:
         cfg={**cfg,'qfq_root':root}
-    idx=G['idx'] if not root else {k:load_prices(cfg,s).close for k,s in [('399001','SZ399001'),('399006','SZ399006'),('999999','SH999999'),('899050','BJ899050'),('000688','SH000688')]}
-    idxcode='899050' if sym.startswith('BJ') else '000688' if sym.startswith(('SH688','SH689')) else '399006' if sym.startswith(('SZ300','SZ301','SZ302')) else '399001' if sym.startswith('SZ') else '999999'
+    idx=G['idx'] if not root else {k:load_prices(cfg,s).close for k,s in INDEX_SYMBOLS.items()}
+    idxcode=board_index(sym)
     f=load_prices(cfg,sym);shares=G['finance'].get(code,{})
     if shares: shares=pd.Series({pd.Timestamp(d):float(v) for d,v in shares.items()}).sort_index().reindex(f.index,method='ffill').fillna(0)*10000
-    else:shares=0
+    else:shares=None
     st=G['strategies'][sid];env=formula_environment(st,f,idx,idx[idxcode],rows[0].get('name',''),shares)
     report=[]
     for r in rows:

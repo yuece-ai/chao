@@ -4,6 +4,7 @@ import re
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from chao.data import MissingInput
 
 
 def strategies(path):
@@ -77,6 +78,7 @@ def formula_environment(strategy, frame, indices, indexc, name, shares):
     def index(code): return indices[code].reindex(frame.index)
     def finance(field):
         if field != 1: raise ValueError(f'Unknown FINANCE field {field}')
+        if shares is None: raise MissingInput('FINANCE(1) needs a share-capital series')
         return shares
     env = dict(MA=MA,REF=REF,HHV=HHV,LLV=LLV,FINANCE=finance,
                # Missing names must not pass the formula's ST exclusion.

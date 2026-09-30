@@ -1,15 +1,17 @@
 {
   "raw_root": "/home/fikgol/data/tdx/cryptd-workspace/data/tdx/raw/vipdoc",
   "reference_root": "origin",
+  "finance_path": "/home/fikgol/data/tdx/finance.json",
   "start": "2010-01-01",
   "end": "2026-09-30",
   "initial_cash": 1000000,
-  "commission_rate": 0.0001,
-  "minimum_commission": 5,
-  "slippage": 0.003,
+  "buy_fee_rate": 0.0005,
+  "sell_fee_rate": 0.0003,
   "workers": 48,
-  "qfq_root": "/home/fikgol/data/tdx/qfq-gbbq",
-  "terminal_policy": "flat",
-  "report_dir": "reports/gbbq-qfq-formula-final",
-  "finance_path": "/home/fikgol/data/tdx/finance.json"
+  "qfq_root": "/home/fikgol/data/tdx/qfq/asof-2026-09-30",
+  "qfq_root_by_strategy": {
+    "2": "/home/fikgol/data/tdx/qfq/asof-2026-09-25",
+    "6": "/home/fikgol/data/tdx/qfq/asof-2026-09-14"
+  },
+  "report_dir": "reports/parity"
 }
