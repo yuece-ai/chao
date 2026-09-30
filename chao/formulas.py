@@ -61,12 +61,12 @@ def evaluate(node, env):
         for op,right in zip(node.ops,node.comparators):
             b=evaluate(right,env)
             close = np.isclose(a, b, rtol=0.0, atol=1e-10)
+            # Decimal bars and averages lose equality at the last binary bit;
+            # every operator treats values within 1e-10 as equal.
             if isinstance(op,ast.Lt): value=np.logical_and(a<b, np.logical_not(close))
-            # TDX evaluates decimal daily bars and moving averages at finite
-            # precision. Preserve an equality lost at the last binary bit.
-            elif isinstance(op,ast.LtE): value=(a<=b) | np.isclose(a,b,rtol=0.0,atol=1e-10)
+            elif isinstance(op,ast.LtE): value=(a<=b) | close
             elif isinstance(op,ast.Gt): value=np.logical_and(a>b, np.logical_not(close))
-            elif isinstance(op,ast.GtE): value=(a>=b) | np.isclose(a,b,rtol=0.0,atol=1e-10)
+            elif isinstance(op,ast.GtE): value=(a>=b) | close
             elif isinstance(op,ast.Eq): value=np.logical_or(a==b, close)
             else: raise ValueError('Unsupported comparison')
             result=result & value; a=b

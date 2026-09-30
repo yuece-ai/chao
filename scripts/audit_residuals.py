@@ -35,10 +35,12 @@ def accounting_rows(report):
 
 
 def signal_cause(row):
+    """Boundary rows flip on a comparison within 1e-5; they are sensitive to
+    last-digit differences but are not reproduced from our data."""
     closest = row['closest']
     if closest and closest['margin'] < BOUNDARY_MARGIN:
         return 'formula_boundary'
-    return 'bar_history'
+    return 'unexplained'
 
 
 def accounting_cause(row):

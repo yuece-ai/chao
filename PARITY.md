@@ -1,8 +1,11 @@
 # TDX parity
 
 The replay is scored against the seven TDX signal exports in `origin/`
-(15,118 trade rows). Reference rows are only used for scoring and for
-choosing between global rules. They are never read by the replay itself.
+(15,118 trade rows). The replay never reads reference rows. They are used
+for three things:
+- scoring;
+- choosing between global rules;
+- selecting each export's adjustment snapshot date (below).
 
 ## Result
 
@@ -21,8 +24,12 @@ choosing between global rules. They are never read by the replay itself.
 
 A signal match means code, date and direction agree. An accounting match
 means quantity, price, amount, fee, profit and available cash all agree
-with the export at the displayed cent. Every remaining row traces back to
-one of 27 root causes listed below, with 0 unexplained.
+with the export at the displayed cent. This is not 100%. Every remaining
+row traces back to one of 27 root causes listed below:
+- 20 are float or display effects in the ledger or the adjusted prices;
+- 5 are formula comparisons within 5e-6 of equality, sensitive to
+  last-digit differences but not reproduced from our data;
+- 2 are unexplained.
 
 ## Reproduced TDX rules
 
@@ -32,9 +39,9 @@ one of 27 root causes listed below, with 0 unexplained.
   rounded once, half away from zero, to the fen.
 - GBBQ float32 fields are read at three decimals (1.799997 → 1.800).
 - Each export only knew the ex-dates up to its snapshot date, and GBBQ also
-  lists announced future ex-dates. The snapshot dates below were inferred
-  from GBBQ events alone; each is a date range that fits all of that
-  export's rows:
+  lists announced future ex-dates. The snapshot dates were selected by
+  scanning candidate dates against the export's reference trade prices. The
+  exact dividend amounts corroborate the choice:
 
   | Export | Snapshot used | Consistent range | Evidence |
   |---|---|---|---|
@@ -45,7 +52,7 @@ one of 27 root causes listed below, with 0 unexplained.
 - These rules reproduce 15,115 of the 15,118 reference trade prices.
 
 **Formulas** (`chao/formulas.py`)
-- The formulas are evaluated in double precision. Both float32 variants (window sums and running sums) matched fewer rows (15,087 and 15,093).
+- The formulas are evaluated in double precision, and every comparison operator treats values within 1e-10 as equal. Both float32 variants (window sums and running sums) matched fewer rows (15,087 and 15,093).
 - INDEXC is the board index (`chao/data.py::board_index`):
   - `899050` for Beijing stocks
   - `000688` for SH688/689
@@ -73,7 +80,7 @@ The classifier is `scripts/audit_residuals.py`. A cascade is a later row of the 
 | Root cause | Roots | Cascades | Evidence |
 |---|---:|---:|---|
 | Formula comparison within 5e-6 of equality | 5 | 5 signal + 8 accounting | the closest comparisons have relative margins 1.0e-7 – 4.9e-6 (below) |
-| Different bar history | 2 | 2 signal | margins ≥ 1.3e-4, so no rounding explains them (below) |
+| Unexplained | 2 | 2 signal | margins ≥ 1.3e-4, so no rounding explains them (below) |
 | Buy quantity off by one share | 9 | 11 | `cash/(f32(price)·f32(1.0005))` lies within 0.015 of an integer (e.g. 328782.9930 vs TDX 328783); TDX's internal float price lands on the other side |
 | Adjusted price on a half-fen boundary | 3 | 1 | the exact qfq value is within 5e-5 of x.xx5 (300451 5.01496, 002865 12.294999) |
 | Fee display on an exact half cent | 4 | 0 | float32 fee is x.xx5 (e.g. 303.455017); TDX shows the lower cent, while cash matches |
@@ -89,7 +96,13 @@ Signal roots:
 | 5 | 600977 | 2024-09-25 | extra buy (TDX bought 09-26) | same | 1.058402 vs 1.058403 |
 | 7 | 920964 | 2023-05-26 | extra buy | same | 1.015974 vs 1.015979 |
 | 6 | 300096 | 2023-01-30 | extra buy | `MA(C,50) > REF(MA(C,50),1)` | margin 1.3e-4 |
-| 7 | 920580 | 2026-05-13 | missing buy | `C/REF(C,10) < INDEXC/REF(INDEXC,10)` | 1.0697 vs 1.0498; 899050 satisfies this condition for the other 299 of 300 strategy-7 reference buys |
+| 7 | 920580 | 2026-05-13 | missing buy | `C/REF(C,10) < INDEXC/REF(INDEXC,10)` | 1.0697 vs 1.0498 |
+
+The last two rows are unexplained:
+- **920580:** 899050 is the right INDEXC here; it satisfies this condition for the other 299 of 300 strategy-7 reference buys. Dropping any one bar between 2026-04-24 and 05-12 reproduces both the 05-13 buy and the 05-21 sell. That fits a TDX bar history with one bar fewer, but we cannot identify the bar or verify it.
+- **300096:** only strategy 3 exports this stock, so no reference price on or near 2023-01-30 can be checked.
+
+The five boundary rows are consistent with last-digit differences in TDX's inputs, but the rules above do not reproduce them.
 
 Rejected hypotheses:
 - float32 formula evaluation (above);
