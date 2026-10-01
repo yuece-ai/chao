@@ -23,9 +23,15 @@ deployable file.
 
 ## Build and run
 
+Settings go in a local `qmt.json` (copy `qmt.example.json`; it holds the
+account, so it is not committed). The bundler checks it against the fields
+below and writes it into the file's `CONFIG`:
+
 ```sh
-nix develop --command python scripts/bundle_qmt.py   # writes dist/chao_strategy.py
+nix develop --command python scripts/bundle_qmt.py --config qmt.json   # writes dist/chao_strategy.py
 ```
+
+Rebuild after changing `qmt.json`; never edit the generated file.
 
 Before running:
 1. Download the data in QMT (数据管理): daily bars for 沪深A股 and the
@@ -66,8 +72,10 @@ Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
      not counted in advance.
 
   All orders are limit orders `price_margin` (1.5%) through the last tick:
-  buys above it, sells below it, in cents and within today's 涨停/跌停
-  prices. Buys are sized at their limit price, which is the cash the broker
+  buys above it, sells below it, in cents. They are kept inside the
+  continuous-auction price cage (a buy at most max(2%, 0.10 yuan) above the
+  best ask, a sell at most that far below the best bid) and within today's
+  涨停/跌停 prices. Buys are sized at their limit price, which is the cash the broker
   freezes. While `dry_run` is on (the default), orders are only printed.
   Each step is marked as attempted before it runs, so a failure is
   reported once instead of on every tick.
@@ -152,8 +160,13 @@ follow the TDX backtest wherever a real account allows:
 ## Settings
 
 Precedence: GUI parameter > account selected in QMT (the injected `account`
-variable) > `CONFIG` in `chao/qmt_entry.py` > default. QMT's parameter panel
-holds numbers only, so lists and text belong in `CONFIG`.
+variable) > `CONFIG` (from `qmt.json`) > default. QMT's parameter panel holds
+numbers only, so lists and text belong in `qmt.json`.
+
+GUI parameters are optional. To use one, add an `<item bind="<key>" .../>`
+line for it to a formulaLayout xml named after the strategy, copying a
+template from QMT's `python\formulaLayout` directory. No xml is generated
+here, because its full schema is not documented and could not be checked.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -166,7 +179,7 @@ holds numbers only, so lists and text belong in `CONFIG`.
 | `signal_time` | `14:56:00` | live only: when to compute the day's signals |
 | `order_time` | `14:56:45` | live only: when to send the sells |
 | `buy_time` | `14:56:50` | live only: when to send the buys |
-| `price_margin` | `0.015` | live only: limit price this far through the last price |
+| `price_margin` | `0.015` | live only: limit price this far through the last price; at most 0.02, the price cage |
 | `ledger_path` | (empty) | required for live orders: JSON file of chao's stocks and pending sells |
 | `report_path` | (empty) | backtest: directory for the TDX-layout trade lists |
 | `tdx_cash` | `1000000` | backtest: cash per (strategy, stock), as in the TDX backtest |
@@ -260,32 +273,47 @@ Known differences between live trading and the TDX backtest:
 
 Run these in order; each step's log is the evidence for the next.
 
-1. **Data.** In 数据管理, download daily bars for 沪深A股 and the four
-   indices from 2008 on (the backtest needs about 400 days before its start),
-   plus ex-rights and financial data.
-2. **Startup.** Load `dist/chao_strategy.py` on a daily 000001.SH chart. The
-   first log lines show the Python/pandas/numpy versions and every effective
-   setting with its origin. A missing QMT call stops the strategy with
-   `QMT API not available: [...]`.
+1. **Clock and data.**
+   - Sync the Windows clock to Beijing time: every live step is timed by it.
+   - In 数据管理, download daily bars for 沪深A股 and the four indices
+     from 2008 on (a backtest wants about 400 days before its start), plus
+     ex-rights and financial data.
+2. **Startup.** Build with your `qmt.json` and load `dist/chao_strategy.py`
+   on a daily 000001.SH chart. The first log lines show:
+   - the Python, pandas and numpy versions;
+   - one `probe` line per QMT data API, with its type and a sample;
+   - every effective setting with its origin;
+   - live only: the machine clock next to the latest tick time.
+
+   A missing call or an unexpected shape stops the strategy at once and
+   shows the value QMT returned.
 3. **Short backtest.**
-   - Run 2024-01-01 – 2024-06-30 with `account_id` and `report_path` set in
-     `CONFIG`, and QMT's backtest fees set as in "Alignment".
-   - Check: no `warning:` lines, `backtest ready`, and the `chao: tdx`
+   - Run 2024-01-01 – 2024-06-30 with `report_path` set and QMT's backtest
+     fees set as in "Alignment".
+   - Check: no `warning:` lines, `backtest ready`, the `chao: tdx`
      summaries.
-   - Then compare:
+   - Compare:
      `scripts/compare_tdx_report.py --report <dir> --start 2024-01-01 --end 2024-06-30`.
-   - Expect the matches of the alignment table, apart from trades opened
-     before the window.
+   - Only signals are comparable in a short window. Every pair starts with
+     fresh cash there, while TDX has compounded since 2010, so quantities
+     and money differ.
 4. **Full backtest.** 2010-01-01 – 2026-09-30, then compare without
-   `--start`/`--end`. Mismatches beyond the alignment table point to a
-   difference between QMT's data (bars, ex-rights, total shares) and TDX's.
-5. **Live dry run** (default `dry_run`), for a few trading days. Check:
-   - static data read in the morning, and its time;
-   - `chao: N signals` before 14:56:45, and its time;
-   - sells at 14:56:45 and buys at 14:56:50 marked `(dry-run)`, with limit
-     prices.
+   `--start`/`--end`. The result should match the alignment table; extra
+   mismatches point to a difference between QMT's data (bars, ex-rights,
+   total shares) and TDX's. With 1e12 capital, QMT's percentage returns
+   mean nothing: compare trade lists and yuan profits.
+5. **Live dry run** (default `dry_run`) for a few trading days:
+   - Start the strategy before 14:30, so the morning static read (about
+     15,000 calls) has finished by `signal_time`.
+   - Check the static read time, `chao: N signals` and its time, and the
+     orders marked `(dry-run)` with limit prices.
+   - A dry run writes no ledger, so it shows no sells. To rehearse one, put
+     a held stock in the ledger file first, e.g.
+     `{"SH600000": {"strategy": 1, "selling": true}}`.
 6. **Simulation account** with `dry_run = 0`, `ledger_path` set and a small
    `max_positions`. Check the orders in QMT, the fills, and that the ledger
    file holds the bought stocks with their strategy.
 7. **Real account**, with the same settings as step 6.
 
+On Linux, `scripts/simulate_qmt.py --start <date> --end <date>` runs step
+3/4 against TDX data in QMT's shapes, through the bundled file.

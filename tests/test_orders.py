@@ -52,3 +52,11 @@ def test_limit_price_crosses_by_the_margin_within_the_daily_limits():
     assert limit_price('buy', 10.0, 0.015, down=9.0, up=10.1) == 10.1    # capped at 涨停
     assert limit_price('sell', 10.0, 0.015, down=9.9, up=11.0) == 9.9    # floored at 跌停
     assert limit_price('buy', 3.33, 0.015) == 3.38                       # 3.37995 -> 3.38
+
+
+def test_limit_price_stays_inside_the_price_cage():
+    # Best ask 10.00: a buy may go up to max(10.20, 10.10) = 10.20.
+    assert limit_price('buy', 10.10, 0.015, ask=10.0) == 10.2       # 10.25 capped by the cage
+    # A 3.00 stock: 2% is 0.06, less than 10 ticks, so the cap is 3.10.
+    assert limit_price('buy', 3.00, 0.015, ask=3.0) == 3.05          # 3.045 -> 3.05, inside 3.10
+    assert limit_price('sell', 9.90, 0.015, bid=10.0) == 9.8         # 9.75 floored at 9.80

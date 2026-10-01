@@ -9,3 +9,5 @@ __pycache__/
 result
 result-*
 /dist/
+# Local QMT settings: holds the account id.
+/qmt.json

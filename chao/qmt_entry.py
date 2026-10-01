@@ -31,8 +31,8 @@ import pandas as pd
 from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.market import Context, MissingInput
-from chao.orders import Order, limit_price, plan_orders
-from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, qmt_date
+from chao.orders import CAGE_RATE, Order, limit_price, plan_orders
+from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, number, text
 from chao.replay import BUY, ReplaySpec, replay
@@ -48,8 +48,11 @@ BATCH_LIVE, BATCH_BACKTEST = 200, 25
 # its own tdx_cash, can be filled at once in one account.
 BACKTEST_CAPITAL = 1e12
 MARKET_CLOSE = '15:00:00'
-# Bars of history wanted before a backtest's start: MA(250) plus REF lookback.
+# Days of history wanted before a backtest's start: MA(250) plus REF lookback.
 WARMUP_DAYS = 400
+# First trading day of each formula index: an index cannot have older bars.
+INDEX_SINCE = {'999999': '1990-12-19', '399001': '1991-04-03', '399006': '2010-06-01',
+               '000688': '2019-12-31', '899050': '2022-04-29'}
 RUN = None           # the current Run; set by init()
 
 
@@ -139,6 +142,8 @@ def check(settings, C, backtest):
         raise ConfigError('priority must list every strategy run; missing {}'.format(missing))
     if not settings.account_id and (backtest or not settings.dry_run):
         raise ConfigError('account_id is required to trade or backtest')
+    if not 0 < settings.price_margin <= CAGE_RATE:
+        raise ConfigError('price_margin must be in (0, {}]: the price cage rejects orders beyond it'.format(CAGE_RATE))
     if not settings.signal_time <= settings.order_time <= settings.buy_time < MARKET_CLOSE:
         raise ConfigError('need signal_time <= order_time <= buy_time < {}'.format(MARKET_CLOSE))
     if not backtest and not settings.dry_run and not settings.ledger_path:
@@ -195,10 +200,11 @@ def limits_for(run, symbols, date):
     """{(side, symbol): limit price} from the latest ticks and today's limits."""
     settings, market = run.context.settings, run.context.market
     limits = {}
-    for symbol, price in market.latest_prices(sorted(symbols), date).items():
+    for symbol, quote in market.latest_quotes(sorted(symbols), date).items():
         down, up = market.price_limits(symbol)
         for side in ('buy', 'sell'):
-            limits[side, symbol] = limit_price(side, price, settings.price_margin, down, up)
+            limits[side, symbol] = limit_price(side, quote.last, settings.price_margin, down, up,
+                                               ask=quote.ask, bid=quote.bid)
     return limits
 
 
@@ -242,13 +248,13 @@ def prepare_backtest(run, start, end):
     strategies = [s for _, s in sorted(run.context.strategies.items())]
     events = {sid: [] for sid in run.context.strategies}
     summaries = {sid: [] for sid in run.context.strategies}
-    names, errors, trades = {}, [], {}
+    stock_names, errors, trades = {}, [], {}
     for batch in batches(market.universe(), BATCH_BACKTEST):
         market.prefetch(batch, run.index_codes)
         bars, results, bad = panel_signals(strategies, market, batch)
         errors += bad
         for symbol, by_strategy in results.items():
-            names[symbol[2:]] = market.name(symbol)
+            stock_names[symbol[2:]] = market.name(symbol)
             for sid, sig in by_strategy.items():
                 rows, summary = replay(bars[symbol], sig, spec)
                 summaries[sid].append(summary)
@@ -262,15 +268,22 @@ def prepare_backtest(run, start, end):
     if last < end:
         raise MissingInput('QMT bars end on {}, before the backtest end {}; download the history first'
                            .format(last, end))
-    first = max(c.index[0] for c in closes)
-    if (pd.Timestamp(start) - first).days < WARMUP_DAYS:
-        print('chao: warning: index history starts {}, less than {} days before {}; download older bars, '
-              'or signals near the start differ from TDX'.format(first.date(), WARMUP_DAYS, start))
+    ex_rights, shares = market.latest_static_dates()
+    for what, latest in (('ex-rights', ex_rights), ('share-capital change', shares)):
+        if latest is not None and latest < pd.Timestamp(start):
+            print('chao: warning: the latest {} QMT returned is {}, before the backtest start; QMT may cut '
+                  'static data at the current bar, which would make qfq or FINANCE wrong'.format(what, latest.date()))
+    wanted = pd.Timestamp(start) - pd.Timedelta(days=WARMUP_DAYS)
+    for code, close in sorted(market.index_closes().items()):
+        since = max(wanted, pd.Timestamp(INDEX_SINCE[code]))
+        if close.index[0] > since + pd.Timedelta(days=10):
+            print('chao: warning: index {} history starts {}; download bars from {} on, or signals near the '
+                  'start differ from TDX'.format(code, close.index[0].date(), since.date()))
     report([], errors)
     for sid in sorted(summaries):
         print('chao: tdx ' + summary_line(sid, summaries[sid]))
     if settings.report_path:
-        for path in write_exports(settings.report_path, events, names):
+        for path in write_exports(settings.report_path, events, stock_names):
             print('chao: wrote ' + path)
     same_day = sorted({(o.symbol, d) for d, orders in trades.items() for o in orders if o.side == 'sell'
                        and any(b.side == 'buy' and b.symbol == o.symbol and b.strategy == o.strategy for b in orders)})
@@ -360,6 +373,9 @@ def init_with(C, namespace):
     global RUN
     check_environment(C, namespace)
     RUN, lines = build_run(C, namespace)
+    market = RUN.context.market
+    for line in probe(C, market.sectors, market.end_time, not RUN.backtest, now().strftime('%Y-%m-%d %H:%M:%S')):
+        print('chao: ' + line)
     if RUN.backtest:
         C.capital = BACKTEST_CAPITAL  # every TDX trade has its own tdx_cash
     for line in lines:

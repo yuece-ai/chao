@@ -13,8 +13,10 @@ Data is read in two layers:
 - bars, read with prefetch(symbols) in batches; only the current batch is
   kept, so a full-history backtest does not hold every stock in memory.
 """
+import re
 from decimal import Decimal, ROUND_HALF_UP
 from fractions import Fraction
+from typing import NamedTuple, Optional
 import numpy as np
 import pandas as pd
 from chao.market import INDEX_SYMBOLS, MarketData, MissingInput
@@ -112,6 +114,20 @@ def with_tick(frame, tick, day):
                         index=frame.index[keep].append(pd.DatetimeIndex([day])), columns=BAR_FIELDS)
 
 
+class Quote(NamedTuple):
+    last: float
+    ask: Optional[float]   # best ask, the buy price cage's reference
+    bid: Optional[float]   # best bid, the sell price cage's reference
+
+
+def first_price(levels):
+    """Best level of a tick's askPrice/bidPrice (a list, or one number)."""
+    for value in (levels if isinstance(levels, (list, tuple)) else [levels]):
+        if value and float(value) > 0:
+            return float(value)
+    return None
+
+
 class QmtMarket(MarketData):
     def __init__(self, context_info, sectors, history_bars, end_time):
         self.C = context_info          # rebound by the entry on every QMT call
@@ -138,16 +154,23 @@ class QmtMarket(MarketData):
         d = self.detail(symbol)
         return d.get('DownStopPrice') or None, d.get('UpStopPrice') or None
 
-    def latest_prices(self, symbols, today):
-        """{symbol: last price} from get_full_tick, for stocks traded today."""
+    def latest_quotes(self, symbols, today):
+        """{symbol: Quote} from get_full_tick, for stocks traded today."""
         day = pd.Timestamp(today)
         ticks = self.C.get_full_tick([to_qmt(s) for s in symbols]) or {}
-        prices = {}
+        quotes = {}
         for s in symbols:
             tick = ticks.get(to_qmt(s))
             if tick and float(tick.get('lastPrice') or 0) > 0 and tick_date(tick) == day:
-                prices[s] = float(tick['lastPrice'])
-        return prices
+                quotes[s] = Quote(float(tick['lastPrice']), first_price(tick.get('askPrice')),
+                                  first_price(tick.get('bidPrice')))
+        return quotes
+
+    def latest_static_dates(self):
+        """Latest ex-rights date and share-capital date read so far (or None)."""
+        events = [e.date for es in self._events.values() for e in es]
+        shares = [pd.Timestamp(d) for steps in self._shares.values() for d in steps]
+        return max(events) if events else None, max(shares) if shares else None
 
     def _fetch(self, qmt_codes):
         data = self.C.get_market_data_ex(BAR_FIELDS, qmt_codes, period='1d', end_time=self.end_time,
@@ -209,6 +232,12 @@ class QmtMarket(MarketData):
         self.detail(symbol)
         self.total_shares(symbol)
 
+    def ex_rights(self, symbol):
+        """Every ex-rights event of a stock, oldest first (cached for the day)."""
+        if symbol not in self._events:
+            self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
+        return self._events[symbol]
+
     def bars(self, symbol):
         raw = self.raw_bars(symbol)
         if symbol not in self._events:
@@ -217,15 +246,6 @@ class QmtMarket(MarketData):
         adjusted = forward_adjust(raw, events)
         adjusted['amount'] = raw['amount']
         return adjusted
-
-    def unadjusted_close(self, symbol, date):
-        """Traded (unadjusted) close used to size orders; None if unknown."""
-        try:
-            raw = self.raw_bars(symbol)
-        except MissingInput:
-            return None
-        close = raw['close'].get(pd.Timestamp(date))
-        return None if close is None or close != close else float(close)
 
     def index_closes(self):
         if self._index_closes is None:
@@ -249,3 +269,65 @@ class QmtMarket(MarketData):
                 raise MissingInput('unexpected get_financial_data result {!r}'.format(type(table)))
             self._shares[symbol] = {qmt_date(k).strftime('%Y-%m-%d'): float(v) for k, v in column.items()}
         return self._shares[symbol]
+
+
+# A long-listed stock with dividends and an index, read once at startup to
+# confirm every API returns the shape this module parses.
+PROBE_STOCK, PROBE_INDEX = '600000.SH', '000001.SH'
+TICK_KEYS = ('timetag', 'lastPrice', 'open', 'high', 'low', 'amount', 'askPrice', 'bidPrice')
+CODE = re.compile(r'^[0-9]{6}\.(SH|SZ|BJ)$')
+
+
+def short(value):
+    if isinstance(value, pd.DataFrame):
+        return 'columns={} rows={} head={}'.format(list(value.columns), len(value), value.head(1).to_dict('records'))
+    text = repr(value)
+    return text if len(text) <= 200 else text[:200] + '...'
+
+
+def probe(C, sectors, end_time, live, clock):
+    """Call each QMT data API once and check the shapes parsed above.
+    Returns log lines; raises MissingInput showing the unexpected value."""
+    lines = []
+    def seen(name, value):
+        lines.append('probe {}: {} {}'.format(name, type(value).__name__, short(value)))
+    def expect(ok, name, value, wanted):
+        if not ok:
+            raise MissingInput('QMT {} returned {}; expected {}'.format(name, short(value), wanted))
+    bars = C.get_market_data_ex(BAR_FIELDS, [PROBE_STOCK, PROBE_INDEX], period='1d', end_time=end_time, count=3,
+                                dividend_type='none', fill_data=False, subscribe=False)
+    for code in (PROBE_STOCK, PROBE_INDEX):
+        frame = (bars or {}).get(code)
+        seen('get_market_data_ex ' + code, frame)
+        expect(isinstance(frame, pd.DataFrame) and not frame.empty and set(BAR_FIELDS) <= set(frame.columns)
+               and all(str(i)[:8].isdigit() for i in frame.index), 'get_market_data_ex', frame,
+               'a DataFrame of {} indexed by YYYYMMDD'.format(BAR_FIELDS))
+    factors = C.get_divid_factors(PROBE_STOCK)
+    seen('get_divid_factors', factors)
+    expect(isinstance(factors, dict) and factors, 'get_divid_factors', factors,
+           '{epoch ms: [7 per-share values]} with past dividends')
+    divid_events(factors)  # raises on a wrong row shape
+    table = C.get_financial_data([TOTAL_CAPITAL], [PROBE_STOCK], '19900101', '20991231', report_type='announce_time')
+    seen('get_financial_data', table)
+    expect(isinstance(table, pd.DataFrame) and table.shape[1] == 1 and not table.empty, 'get_financial_data',
+           table, 'a one-column DataFrame indexed by date')
+    qmt_date(table.index[-1])
+    read = getattr(C, 'get_instrument_detail', None) or C.get_instrumentdetail
+    detail = read(PROBE_STOCK)
+    seen('get_instrument_detail', detail)
+    expect(isinstance(detail, dict) and detail.get('InstrumentName') and 'UpStopPrice' in detail
+           and 'DownStopPrice' in detail, 'get_instrument_detail', detail,
+           'a dict with InstrumentName, UpStopPrice, DownStopPrice')
+    for sector in sectors:
+        codes = C.get_stock_list_in_sector(sector)
+        seen('get_stock_list_in_sector ' + sector, len(codes or []))
+        expect(codes and all(CODE.match(c) for c in codes), 'get_stock_list_in_sector ' + sector,
+               (codes or [])[:5], "a non-empty list of codes like '600000.SH'")
+    if live:
+        tick = (C.get_full_tick([PROBE_STOCK]) or {}).get(PROBE_STOCK)
+        seen('get_full_tick', tick)
+        expect(isinstance(tick, dict) and all(k in tick for k in TICK_KEYS), 'get_full_tick', tick,
+               'a dict with {}'.format(TICK_KEYS))
+        lines.append('probe clock: machine {} latest tick {}'.format(clock, tick.get('timetag')))
+    return lines
+

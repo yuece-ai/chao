@@ -66,3 +66,10 @@ def test_split_module_drops_package_imports_and_rejects_import_chao():
     assert imports == [(None, 're', None)] and body == 'Y = X' and names == ['Y']
     with pytest.raises(BundleError):
         split_module('import chao.market\n')
+
+
+def test_bundle_writes_the_local_config_after_checking_it():
+    text = bundle('test', {'account_id': 'A1', 'max_positions': 5})
+    assert "\nCONFIG = {'account_id': 'A1', 'max_positions': 5}\n" in text
+    with pytest.raises(ValueError, match="unknown keys \\['max_position'\\]"):
+        bundle('test', {'max_position': 5})

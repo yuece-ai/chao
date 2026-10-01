@@ -17,6 +17,15 @@ class FakeContextInfo:
         self.start, self.end = start, end
         self.ticks = ticks or {}          # {qmt code: get_full_tick dict}
         self.limits = limits or {}        # {qmt code: (跌停价, 涨停价)}
+        # Data for the startup probe (600000.SH), as a real client serves it.
+        self.bars.setdefault('600000.SH', daily([10.0] * 3))
+        self.bars.setdefault('000001.SH', daily([1000.0] * 3))
+        self.divid.setdefault('600000.SH', {1699200000000: [0.4, 0.0, 0.0, 0.0, 0.0, 0.0, 1.03]})
+        self.shares.setdefault('600000.SH', pd.Series([2.93e10], index=['20200101']))
+        self.names.setdefault('600000.SH', '浦发银行')
+        self.ticks.setdefault('600000.SH', {'timetag': '20210223 14:56:00', 'lastPrice': 10.0, 'open': 10.0,
+                                            'high': 10.0, 'low': 10.0, 'amount': 1e8, 'askPrice': [10.01],
+                                            'bidPrice': [10.0]})
         self.calls = []                   # (function, number of codes) per data call
         self.bar_dates = list(bar_dates)  # one 'YYYYMMDD' per bar position
         self.barpos = len(self.bar_dates) - 1

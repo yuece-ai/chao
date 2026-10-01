@@ -15,7 +15,7 @@ Rules:
 - Quantities are whole lots of 100 shares; STAR market (SH688/689) orders
   need at least 200 shares.
 """
-from decimal import Decimal, ROUND_HALF_UP
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP
 from typing import Dict, List, NamedTuple, Set
 
 LOT = 100
@@ -43,16 +43,29 @@ class Order(NamedTuple):
     strategy: int
 
 
-def limit_price(side, last, margin, down=None, up=None):
+def to_cents(value, rounding=ROUND_HALF_UP):
+    return float(Decimal(repr(float(value))).quantize(Decimal('0.01'), rounding=rounding))
+
+
+# Continuous-auction price cage (沪深 since 2023): a buy may not exceed the
+# best ask by more than max(2%, 10 ticks); a sell may not undercut the best
+# bid by more. Orders outside it are rejected.
+CAGE_RATE, CAGE_TICKS = 0.02, 0.10
+
+
+def limit_price(side, last, margin, down=None, up=None, ask=None, bid=None):
     """Limit price `margin` through the last price (above for a buy, below for
-    a sell), in cents and within the day's price limits when known."""
-    target = last * (1 + margin) if side == 'buy' else last * (1 - margin)
-    price = float(Decimal(repr(target)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
-    if side == 'buy' and up:
-        price = min(price, float(up))
-    if side == 'sell' and down:
-        price = max(price, float(down))
-    return price
+    a sell), in cents, inside the price cage around the best quote and the
+    day's price limits when they are known."""
+    if side == 'buy':
+        price = to_cents(last * (1 + margin))
+        if ask:
+            price = min(price, max(to_cents(ask * (1 + CAGE_RATE), ROUND_FLOOR), to_cents(ask + CAGE_TICKS)))
+        return min(price, float(up)) if up else price
+    price = to_cents(last * (1 - margin))
+    if bid:
+        price = max(price, min(to_cents(bid * (1 - CAGE_RATE), ROUND_CEILING), to_cents(bid - CAGE_TICKS)))
+    return max(price, float(down)) if down else price
 
 
 def lot_volume(symbol, value, price):

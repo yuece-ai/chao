@@ -1,0 +1,11 @@
+{
+  "account_id": "",
+  "dry_run": 1,
+  "max_positions": 10,
+  "signal_time": "14:56:00",
+  "order_time": "14:56:45",
+  "buy_time": "14:56:50",
+  "price_margin": 0.015,
+  "ledger_path": "D:\\chao\\ledger.json",
+  "report_path": "D:\\chao\\report"
+}

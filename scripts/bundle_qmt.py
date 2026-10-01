@@ -7,10 +7,14 @@ modules listed in MODULES are concatenated in that order:
   namespace;
 - other imports are hoisted to the top and deduplicated;
 - a top-level name defined twice fails the build;
-- chao/catalog.py is replaced by the strategy files embedded as a literal.
+- chao/catalog.py is replaced by the strategy files embedded as a literal;
+- with --config, the local settings file (e.g. qmt.json, which holds the
+  account and is not committed) becomes CONFIG, after it is checked
+  against the entry's fields.
 """
 import argparse
 import ast
+import json
 import subprocess
 from pathlib import Path
 from chao.catalog import strategy_files
@@ -80,11 +84,23 @@ def catalog_module():
             '    return dict(STRATEGY_FILES)').format(files)
 
 
-def bundle(revision):
+def checked_config(config):
+    """Reject unknown keys and bad values now rather than in the client."""
+    from chao.qmt_entry import FIELDS
+    from chao.settings import load
+    load(FIELDS, [('config', config)])
+    return config
+
+
+def bundle(revision, config=None):
     imports, sections, owner = [], [], {}
     for name in MODULES:
         path = 'chao/{}.py'.format(name)
         source = catalog_module() if name == 'catalog' else (ROOT / path).read_text(encoding='utf-8')
+        if name == 'qmt_entry' and config:
+            if source.count('\nCONFIG = {}\n') != 1:
+                raise BundleError('chao/qmt_entry.py must define CONFIG = {} exactly once')
+            source = source.replace('\nCONFIG = {}\n', '\nCONFIG = {!r}\n'.format(checked_config(config)))
         found, body, defined = split_module(source)
         for symbol in defined:
             if symbol in owner:
@@ -101,10 +117,12 @@ def bundle(revision):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--out', default='dist/chao_strategy.py')
+    ap.add_argument('--config', help='local settings JSON (see qmt.example.json) written into CONFIG')
     args = ap.parse_args()
+    config = json.loads(Path(args.config).read_text(encoding='utf-8')) if args.config else None
     revision = subprocess.run(['git', 'describe', '--always', '--dirty'], cwd=ROOT,
                               capture_output=True, text=True, check=True).stdout.strip()
-    text = bundle(revision)
+    text = bundle(revision, config)
     compile(text, args.out, 'exec')
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)

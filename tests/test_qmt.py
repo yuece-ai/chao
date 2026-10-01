@@ -32,18 +32,17 @@ def test_divid_factors_become_per_ten_ex_rights_up_to_as_of():
 def test_qmt_market_adjusts_bars_and_keeps_traded_closes():
     bars = dict(INDEX_BARS, **{'000001.SZ': daily([10.0, 9.5], start='2020-01-01')})
     C = FakeContextInfo(bars, divid={'000001.SZ': {'20200102': [0.5, 0, 0, 0, 0, 0, 1.0]}},
-                        names={'000001.SZ': 'PING AN'}, sectors={'A': ['000001.SZ', '600000.SH']},
+                        names={'000001.SZ': 'PING AN'}, sectors={'A': ['000001.SZ', '600036.SH']},
                         shares={'000001.SZ': pd.Series([1e9], index=['20190101'])})
     market = QmtMarket(C, ('A',), HISTORY_BARS, '')
-    market.prefetch(['SZ000001', 'SH600000'], ['999999', '399001'])
+    market.prefetch(['SZ000001', 'SH600036'], ['999999', '399001'])
     assert C.calls == [('get_market_data_ex', 4)]  # one call for the batch and the needed indices
     assert market.bars('SZ000001').close.tolist() == [9.5, 9.5]
-    assert market.unadjusted_close('SZ000001', '2020-01-01') == 10.0
     assert set(market.index_closes()) == {'999999', '399001'}
-    assert market.universe() == ['SH600000', 'SZ000001']
-    assert market.name('SZ000001') == 'PING AN' and market.name('SH600000') is None
-    with pytest.raises(ValueError, match='no daily bars from QMT for 600000.SH'):
-        market.bars('SH600000')
+    assert market.universe() == ['SH600036', 'SZ000001']
+    assert market.name('SZ000001') == 'PING AN' and market.name('SH600036') is None
+    with pytest.raises(ValueError, match='no daily bars from QMT for 600036.SH'):
+        market.bars('SH600036')
     assert market.total_shares('SZ000001') == {'2019-01-01': 1e9}
 
 
@@ -309,3 +308,15 @@ def test_only_the_buying_strategy_sells(test_strategy, tmp_path, monkeypatch):
     log = run_handlebar(C, account, account_id='A1', dry_run=0, ledger_path=path)
     assert 'chao: signal 2021-02-23 strategy=1 SZ000001 sell' in log
     assert account.orders == []
+
+
+def test_startup_probe_shows_an_unexpected_shape():
+    C = FakeContextInfo({})
+    C.divid['600000.SH'] = {1699200000000: [0.4, 0.0]}  # five values missing
+    with pytest.raises(ValueError, match=r'unexpected get_divid_factors row \[0.4, 0.0\]'):
+        entry.init_with(C, FakeAccount().namespace())
+
+
+def test_price_margin_must_stay_inside_the_price_cage():
+    with pytest.raises(ConfigError, match='price_margin must be in'):
+        entry.build_run(FakeContextInfo({}), FakeAccount().namespace(price_margin=0.03))
