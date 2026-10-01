@@ -325,6 +325,8 @@ def probe(C, sectors, end_time, live, clock):
            table, 'a one-column DataFrame indexed by date')
     qmt_date(table.index[-1])
     known = table.iloc[:, 0].dropna()
+    expect(len(known) > 0, 'get_financial_data', table,
+           'total_capital values; all are NaN, so download 财务数据 in 数据管理 first')
     lines.append('probe total shares {}: {} on {}, {} changes (shares; 600000.SH is about 2.9e10)'.format(
         PROBE_STOCK, known.iloc[-1] if len(known) else None, known.index[-1] if len(known) else None,
         len(share_steps(known))))

@@ -313,8 +313,9 @@ def test_only_the_buying_strategy_sells(test_strategy, tmp_path, monkeypatch):
 def test_startup_probe_shows_an_unexpected_shape():
     C = FakeContextInfo({})
     C.divid['600000.SH'] = {1699200000000: [0.4, 0.0]}  # five values missing
+    entry.init_with(C, FakeAccount().namespace())
     with pytest.raises(ValueError, match=r'unexpected get_divid_factors row \[0.4, 0.0\]'):
-        entry.init_with(C, FakeAccount().namespace())
+        entry.handlebar(C)
 
 
 def test_price_margin_must_stay_inside_the_price_cage():
@@ -326,3 +327,34 @@ def test_daily_share_rows_collapse_to_changes():
     from chao.qmt_source import share_steps
     daily = pd.Series([1e9, 1e9, 1e9, 2e9, 2e9], index=['20200101', '20200102', '20200103', '20200106', '20200107'])
     assert share_steps(daily) == {'2020-01-01': 1e9, '2020-01-06': 2e9}
+
+
+def test_missing_financial_data_stops_at_startup():
+    C = FakeContextInfo({})
+    C.shares['600000.SH'] = pd.Series([float('nan')] * 3, index=['20200101', '20200102', '20200103'])
+    entry.init_with(C, FakeAccount().namespace())
+    with pytest.raises(ValueError, match='all are NaN, so download'):
+        entry.handlebar(C)
+
+
+def test_mode_is_decided_at_the_first_bar(test_strategy):
+    # The client reported do_back_test=False in init for a backtest.
+    C = backtest_client([10.0] * 297 + [11.0, 10.0, 10.0], start='2021-02-01 00:00:00')
+    C.do_back_test = False
+    with redirect_stdout(io.StringIO()) as out:
+        entry.init_with(C, FakeAccount().namespace(account_id='testS'))
+        C.do_back_test, C.barpos = True, 299
+        entry.handlebar(C)
+    assert entry.RUN.backtest
+    assert 'chao: mode backtest (do_back_test=True at the first bar)' in out.getvalue()
+    assert 'warning: the backtest capital was not raised in init' in out.getvalue()
+
+
+def test_mode_can_be_forced(test_strategy):
+    C = backtest_client([10.0] * 297 + [11.0, 10.0, 10.0], start='2021-02-01 00:00:00')
+    C.do_back_test = False
+    with redirect_stdout(io.StringIO()):
+        entry.init_with(C, FakeAccount().namespace(account_id='testS', mode='backtest'))
+        C.barpos = 299
+        entry.handlebar(C)
+    assert entry.RUN.backtest and C.capital == entry.BACKTEST_CAPITAL

@@ -1,8 +1,9 @@
 """QMT built-in strategy entry: GUI parameters -> Settings -> Context -> orders.
 
-QMT calls init(C) once and handlebar(C) per bar; the run mode (backtest or
-live) is chosen in the QMT GUI and read from C.do_back_test. The main chart
-must be daily. State lives in the module-level RUN object, because QMT rolls
+QMT calls init(C) once and handlebar(C) per bar. The run mode is decided on
+the first handlebar call, not in init: in the client, C.do_back_test was still
+False in init for a backtest. `mode` 'auto' follows C.do_back_test there;
+'backtest' or 'live' forces it. The main chart must be daily. State lives in the module-level RUN object, because QMT rolls
 back attributes set on ContextInfo between handlebar calls.
 
 - Backtest, aligned with the user's TDX backtest: on the first bar every
@@ -53,7 +54,8 @@ WARMUP_DAYS = 400
 # First trading day of each formula index: an index cannot have older bars.
 INDEX_SINCE = {'999999': '1990-12-19', '399001': '1991-04-03', '399006': '2010-06-01',
                '000688': '2019-12-31', '899050': '2022-04-29'}
-RUN = None           # the current Run; set by init()
+RUN = None           # the current Run; set on the first handlebar call
+NAMESPACE = None     # the strategy's globals, saved by init for that call
 
 
 def names(value):
@@ -71,6 +73,13 @@ def boolean(value):
     return bool(value)
 
 
+def run_mode(value):
+    text = str(value).strip().lower()
+    if text not in ('auto', 'backtest', 'live'):
+        raise ValueError("expected 'auto', 'backtest' or 'live'")
+    return text
+
+
 def clock(value):
     """'14:56' or '14:56:45' -> '14:56:45'."""
     text = str(value).strip()
@@ -79,6 +88,7 @@ def clock(value):
 
 
 FIELDS = [
+    Field('mode', run_mode, 'auto', "'auto': QMT's do_back_test at the first bar; 'backtest' or 'live' forces it"),
     Field('strategies', id_list, (1, 2, 3, 4, 5, 6), 'strategy ids to run (7, Beijing, is not traded)'),
     Field('priority', id_list, (6, 5, 4, 3, 2, 1), 'conflict order, highest first; must list every strategy run'),
     Field('sectors', names, ('沪深A股',), 'QMT sectors forming the stock universe'),
@@ -155,18 +165,26 @@ def backtest_end(C):
     return qmt_date(C.end).strftime('%Y%m%d')
 
 
-def build_run(C, namespace):
+def load_settings(namespace):
     loaded = load(FIELDS, [('gui', gui_values(namespace)), ('qmt account', qmt_account(namespace)),
                            ('CONFIG', CONFIG)])
-    settings = QmtSettings(**loaded.values)
-    backtest = bool(C.do_back_test)
+    return QmtSettings(**loaded.values), describe(loaded)
+
+
+def is_backtest(settings, C):
+    return settings.mode == 'backtest' or (settings.mode == 'auto' and bool(C.do_back_test))
+
+
+def build_run(C, namespace):
+    settings, lines = load_settings(namespace)
+    backtest = is_backtest(settings, C)
     check(settings, C, backtest)
     selected = load_strategies(strategy_files())
     market = QmtMarket(C, settings.sectors, ALL_BARS if backtest else HISTORY_BARS,
                        backtest_end(C) if backtest else '')
     context = Context(settings, market, {sid: selected[sid] for sid in settings.strategies})
     ledger = Ledger('' if backtest else settings.ledger_path)
-    return Run(context, qmt_api(namespace), ledger, backtest), describe(loaded)
+    return Run(context, qmt_api(namespace), ledger, backtest), lines
 
 
 def batches(items, size):
@@ -370,20 +388,35 @@ def check_environment(C, namespace):
 
 
 def init_with(C, namespace):
-    global RUN
+    global RUN, NAMESPACE
     check_environment(C, namespace)
-    RUN, lines = build_run(C, namespace)
-    market = RUN.context.market
-    for line in probe(C, market.sectors, market.end_time, not RUN.backtest, now().strftime('%Y-%m-%d %H:%M:%S')):
-        print('chao: ' + line)
-    if RUN.backtest:
-        C.capital = BACKTEST_CAPITAL  # every TDX trade has its own tdx_cash
+    settings, _ = load_settings(namespace)
+    RUN, NAMESPACE = None, namespace
+    print('chao: init do_back_test={} mode={}'.format(getattr(C, 'do_back_test', None), settings.mode))
+    if is_backtest(settings, C):
+        C.capital = BACKTEST_CAPITAL  # capital can only be set in init; every TDX trade has its own tdx_cash
+
+
+def start(C):
+    """First handlebar call: decide the mode, build the run, probe the APIs."""
+    global RUN
+    run, lines = build_run(C, NAMESPACE)
     for line in lines:
         print('chao: config ' + line)
-    print('chao: mode {}'.format('backtest' if RUN.backtest else 'live'))
+    print('chao: mode {} (do_back_test={} at the first bar)'.format(
+        'backtest' if run.backtest else 'live', getattr(C, 'do_back_test', None)))
+    if run.backtest and getattr(C, 'capital', None) != BACKTEST_CAPITAL:
+        print("chao: warning: the backtest capital was not raised in init; set it high in QMT's backtest "
+              "settings, or set mode='backtest', so no mirrored trade is short of cash")
+    market = run.context.market
+    for line in probe(C, market.sectors, market.end_time, not run.backtest, now().strftime('%Y-%m-%d %H:%M:%S')):
+        print('chao: ' + line)
+    RUN = run
 
 
 def handlebar(C):
+    if RUN is None:
+        start(C)
     run = RUN
     if run.failed:
         return
