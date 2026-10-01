@@ -1,8 +1,10 @@
 # QMT built-in strategy
 
-The QMT client runs strategies as a single GBK-encoded Python 3.6 file. The
-source stays as modules under `chao/`; `scripts/bundle_qmt.py` builds the
-deployable file.
+The QMT client runs a strategy as a single Python 3.6 file. The source stays
+as modules under `chao/`; `scripts/bundle_qmt.py` builds the deployable file.
+The file is pure ASCII: Chinese text in strings is written as `\u` escapes
+with the same values at run time, so it can be pasted into QMT's strategy
+editor whatever encoding the copy goes through.
 
 ## Structure
 

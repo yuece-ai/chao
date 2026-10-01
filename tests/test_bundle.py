@@ -32,7 +32,7 @@ def run_strategy(module):
 @pytest.fixture(scope='module')
 def bundled(tmp_path_factory):
     path = tmp_path_factory.mktemp('dist') / 'chao_strategy.py'
-    path.write_bytes(bundle('test').encode('gbk'))
+    path.write_bytes(bundle('test').encode('ascii'))
     spec = importlib.util.spec_from_file_location('chao_strategy', str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -79,8 +79,18 @@ def test_committed_qmt_file_matches_the_sources():
     """qmt/chao_strategy.py is what bundle_qmt.py builds from qmt/integration.json."""
     import json
     from pathlib import Path
-    committed = Path('qmt/chao_strategy.py').read_bytes().decode('gbk')
+    committed = Path('qmt/chao_strategy.py').read_bytes().decode('ascii')
     revision = committed.splitlines()[1].split(' from ')[1].split(';')[0]
     config = json.loads(Path('qmt/integration.json').read_text(encoding='utf-8'))
     assert committed == bundle(revision, config), \
         'rebuild: python scripts/bundle_qmt.py --config qmt/integration.json --out qmt/chao_strategy.py'
+
+
+def test_bundle_is_pure_ascii_and_keeps_the_chinese_values():
+    """Pure ASCII survives copy and paste into QMT in any encoding."""
+    text = bundle('test')
+    assert text.isascii()
+    namespace = {}
+    exec(compile(text, 'chao_strategy.py', 'exec'), namespace)
+    assert namespace['BUY_KEY'] == '买入条件'
+    assert any('震荡突破' in source for source in namespace['STRATEGY_FILES'].values())

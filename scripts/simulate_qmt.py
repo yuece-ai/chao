@@ -66,7 +66,7 @@ class SimAccount:
 
 def load_bundle(config):
     path = Path(tempfile.mkdtemp()) / 'chao_strategy.py'
-    path.write_bytes(bundle('simulation', config).encode('gbk'))
+    path.write_bytes(bundle('simulation', config).encode('ascii'))
     spec = importlib.util.spec_from_file_location('chao_strategy', str(path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
