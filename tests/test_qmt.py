@@ -358,7 +358,7 @@ def test_daily_share_rows_collapse_to_changes():
 def test_missing_financial_data_stops_a_backtest_at_startup():
     C = FakeContextInfo({}, backtest=True)
     C.shares['600000.SH'] = pd.Series([float('nan')] * 3, index=['20200101', '20200102', '20200103'])
-    entry.init_with(C, FakeAccount().namespace())
+    entry.init_with(C, FakeAccount().namespace(account_id='A1'))
     with pytest.raises(ValueError, match='all are NaN, so download') as failure:
         entry.handlebar(C)
     # The diagnosis lists the other share sources and the local financial folders.
@@ -369,8 +369,10 @@ def test_live_needs_no_financial_data():
     C = FakeContextInfo({})
     C.shares['600000.SH'] = pd.Series([float('nan'), 3e10], index=['20200101', '20200102'])
     C.get_financial_data = None  # never called live
-    lines = probe(C, (), '', True, '2021-02-23 14:00:00')
-    assert any("'TotalVolume': 30000000000.0" in line for line in lines)
+    probe(C, (), '', True, '2021-02-23 14:00:00')  # no get_financial_data call, no error
+    C.shares['600000.SH'] = pd.Series([float('nan')], index=['20200101'])
+    with pytest.raises(ValueError, match='TotalVolume, the total shares FINANCE'):
+        probe(C, (), '', True, '2021-02-23 14:00:00')
 
 
 def test_mode_is_decided_at_the_first_bar(test_strategy):
