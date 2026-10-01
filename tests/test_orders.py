@@ -52,11 +52,3 @@ def test_limit_price_crosses_by_the_margin_within_the_daily_limits():
     assert limit_price('buy', 10.0, 0.015, down=9.0, up=10.1) == 10.1    # capped at 涨停
     assert limit_price('sell', 10.0, 0.015, down=9.9, up=11.0) == 9.9    # floored at 跌停
     assert limit_price('buy', 3.33, 0.015) == 3.38                       # 3.37995 -> 3.38
-
-
-def test_sale_proceeds_fund_the_same_days_buys():
-    b = book(cash=0.0, total=20000.0, holdings={'SZ000009': Holding(1000, 1000)}, owned={'SZ000009'})
-    signals = [(1, 'SZ000009', 'sell'), (1, 'SZ000001', 'buy')]
-    orders = plan_orders(signals, b, {'SZ000001': 10.0}, 2, (1,), sell_prices={'SZ000009': 9.85})
-    # 1000 * 9.85 * 0.998 = 9830 cash; target 10000; 9830 * 0.998 / 10 -> 900 shares.
-    assert orders == [Order('sell', 'SZ000009', 1000, 1), Order('buy', 'SZ000001', 900, 1)]

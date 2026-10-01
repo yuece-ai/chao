@@ -51,20 +51,26 @@ Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
     capital is set to 1e12 in `init`, so no trade is limited by cash.
   - If QMT's bars end before `C.end`, the run stops and asks for the
     history to be downloaded.
-- **Live:** only on the last bar, in three steps a day:
+- **Live:** only on the last bar, and only when the main chart's last bar is
+  today's calendar date (so never on holidays or before the day's first
+  bar), and never at or after 15:00. Four steps a day:
   1. On the first tick, read the universe and the per-stock static data
      (ex-rights, total shares, contract details with today's price limits).
   2. At `signal_time` (14:56:00), compute today's signals; this takes
      about 25 s.
-  3. At the first tick at or after `order_time` (14:56:45):
-     - read the account and one batch of latest ticks;
-     - send limit orders `price_margin` (1.5%) through the last price:
-       buys above it, sells below it, in cents and within today's 涨停/跌停
-       prices;
-     - size buys at their limit price, which is the cash the broker
-       freezes.
+  3. At `order_time` (14:56:45), send the sells: pending sells, plus stocks
+     whose buying strategy signals a sell today.
+  4. At `buy_time` (14:56:50), read the account again and size the buys
+     from the cash actually available. Sale proceeds count once the sells
+     have filled; the broker checks available cash per order, so they are
+     not counted in advance.
 
-     While `dry_run` is on (the default), orders are only printed.
+  All orders are limit orders `price_margin` (1.5%) through the last tick:
+  buys above it, sells below it, in cents and within today's 涨停/跌停
+  prices. Buys are sized at their limit price, which is the cash the broker
+  freezes. While `dry_run` is on (the default), orders are only printed.
+  Each step is marked as attempted before it runs, so a failure is
+  reported once instead of on every tick.
   - `get_market_data_ex(subscribe=False)` reads local data, which ends
     yesterday during the session. Today's bar therefore comes from one
     `get_full_tick` call per batch: open, high, low, `lastPrice` as the
@@ -126,8 +132,8 @@ follow the TDX backtest wherever a real account allows:
   position is gone, as a TDX sell always completes. Only stocks chao bought
   (the ledger) are ever sold, using the sellable volume, so T+1 holds and
   manual holdings are never touched.
-- **Sale proceeds:** a sell's expected proceeds (limit price × shares, less
-  0.2%) fund the same day's buys, as A-share proceeds do.
+- **Sale proceeds:** buys go out 5 seconds after the sells and use the cash
+  then available, so filled sells fund the same day's buys.
 - **Position limit:** at most `max_positions` chao stocks are held at once.
 - **No re-buys:** a stock already in the account is never bought again.
   Neither is a stock with a chao order today, which keeps a restarted live
@@ -158,7 +164,8 @@ holds numbers only, so lists and text belong in `CONFIG`.
 | `dry_run` | `1` | live only: print orders instead of sending them |
 | `max_positions` | `10` | most chao stocks held at once |
 | `signal_time` | `14:56:00` | live only: when to compute the day's signals |
-| `order_time` | `14:56:45` | live only: when to send the orders |
+| `order_time` | `14:56:45` | live only: when to send the sells |
+| `buy_time` | `14:56:50` | live only: when to send the buys |
 | `price_margin` | `0.015` | live only: limit price this far through the last price |
 | `ledger_path` | (empty) | required for live orders: JSON file of chao's stocks and pending sells |
 | `report_path` | (empty) | backtest: directory for the TDX-layout trade lists |
@@ -248,3 +255,37 @@ Known differences between live trading and the TDX backtest:
   applies.
 - The backtest universe is today's sector list, so stocks delisted since
   are missing.
+
+## Integration checklist
+
+Run these in order; each step's log is the evidence for the next.
+
+1. **Data.** In 数据管理, download daily bars for 沪深A股 and the four
+   indices from 2008 on (the backtest needs about 400 days before its start),
+   plus ex-rights and financial data.
+2. **Startup.** Load `dist/chao_strategy.py` on a daily 000001.SH chart. The
+   first log lines show the Python/pandas/numpy versions and every effective
+   setting with its origin. A missing QMT call stops the strategy with
+   `QMT API not available: [...]`.
+3. **Short backtest.**
+   - Run 2024-01-01 – 2024-06-30 with `account_id` and `report_path` set in
+     `CONFIG`, and QMT's backtest fees set as in "Alignment".
+   - Check: no `warning:` lines, `backtest ready`, and the `chao: tdx`
+     summaries.
+   - Then compare:
+     `scripts/compare_tdx_report.py --report <dir> --start 2024-01-01 --end 2024-06-30`.
+   - Expect the matches of the alignment table, apart from trades opened
+     before the window.
+4. **Full backtest.** 2010-01-01 – 2026-09-30, then compare without
+   `--start`/`--end`. Mismatches beyond the alignment table point to a
+   difference between QMT's data (bars, ex-rights, total shares) and TDX's.
+5. **Live dry run** (default `dry_run`), for a few trading days. Check:
+   - static data read in the morning, and its time;
+   - `chao: N signals` before 14:56:45, and its time;
+   - sells at 14:56:45 and buys at 14:56:50 marked `(dry-run)`, with limit
+     prices.
+6. **Simulation account** with `dry_run = 0`, `ledger_path` set and a small
+   `max_positions`. Check the orders in QMT, the fills, and that the ledger
+   file holds the bought stocks with their strategy.
+7. **Real account**, with the same settings as step 6.
+

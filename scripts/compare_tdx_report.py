@@ -22,12 +22,15 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--report', required=True, help='directory with strategy-<id>-signals.tsv')
     ap.add_argument('--reference-root', default='origin')
+    ap.add_argument('--start', default='0000-00-00', help='compare trades on or after this date')
+    ap.add_argument('--end', default='9999-99-99', help='compare trades on or before this date')
     args = ap.parse_args()
-    refs = read_references(args.reference_root)
+    inside = lambda rows: [r for r in rows if args.start <= r['date'] <= args.end]
+    refs = {sid: inside(rows) for sid, rows in read_references(args.reference_root).items()}
     result = {}
     for path in sorted(Path(args.report).glob('strategy-*-signals.tsv')):
         sid = int(path.stem.split('-')[1])
-        s = score(refs.get(sid, []), read_report(path))
+        s = score(refs.get(sid, []), inside(read_report(path)))
         result[sid] = {'expected': s['expected'], 'matched': s['matched'], 'missing': len(s['missing']),
                        'extra': len(s['extra']), 'accounting_matched': s['accounting_matched']}
     print(json.dumps(result, indent=2))

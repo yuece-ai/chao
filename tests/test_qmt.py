@@ -1,3 +1,4 @@
+import datetime
 import io
 import json
 from contextlib import redirect_stdout
@@ -91,7 +92,8 @@ def run_handlebar(C, account, **gui):
 def test_strategy(monkeypatch):
     monkeypatch.setattr(entry, 'strategy_files', lambda: TEST_STRATEGY)
     monkeypatch.setattr(entry, 'CONFIG', {'sectors': 'A', 'strategies': '1', 'signal_time': '00:00',
-                                          'order_time': '00:00'})
+                                          'order_time': '00:00', 'buy_time': '00:00'})
+    monkeypatch.setattr(entry, 'now', lambda: datetime.datetime(2021, 2, 23, 14, 58))
 
 
 def live(closes, **kwargs):
@@ -218,22 +220,58 @@ def test_live_stops_when_indices_have_no_bar_today(test_strategy):
     assert C.calls.count(('get_full_tick', 5)) == 1
 
 
-def test_live_signals_and_orders_happen_at_their_own_times(test_strategy, monkeypatch, tmp_path):
-    monkeypatch.setattr(entry, 'CONFIG', dict(entry.CONFIG, signal_time='14:56:00', order_time='14:56:45'))
+def test_live_stages_run_at_their_own_times(test_strategy, monkeypatch, tmp_path):
+    monkeypatch.setattr(entry, 'CONFIG', dict(entry.CONFIG, signal_time='14:56:00', order_time='14:56:45',
+                                              buy_time='14:56:50'))
     C = live([10.0] * 299 + [11.0], names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
     account = FakeAccount(cash=100000.0)
     clock = {'now': '14:55:59'}
-    monkeypatch.setattr(entry, 'now_hms', lambda: clock['now'])
+    monkeypatch.setattr(entry, 'now', lambda: datetime.datetime.strptime('2021-02-23 ' + clock['now'], '%Y-%m-%d %H:%M:%S'))
     with redirect_stdout(io.StringIO()) as out:
-        entry.RUN, _ = entry.build_run(C, account.namespace(account_id='A1', dry_run=0,
-                                                           ledger_path=str(tmp_path / 'ledger.json')))
-    for clock['now'] in ('14:55:59', '14:56:00', '14:56:30', '14:56:45', '14:56:48'):
+        entry.init_with(C, account.namespace(account_id='A1', dry_run=0, ledger_path=str(tmp_path / 'l.json')))
+    seen = {}
+    for clock['now'] in ('14:55:59', '14:56:00', '14:56:30', '14:56:45', '14:56:48', '14:56:50', '14:56:53'):
         with redirect_stdout(out):
             entry.handlebar(C)
-        if clock['now'] == '14:56:30':
-            assert account.orders == [] and '2021-02-23' in entry.RUN.signals
-    assert [o[0] for o in account.orders] == [23]  # sent once, at 14:56:45
-    assert C.calls.count(('get_market_data_ex', 5)) == 1  # signals computed once
+        seen[clock['now']] = list(account.orders)
+    assert seen['14:56:48'] == [] and '2021-02-23' in entry.RUN.signals   # signals, no buy before buy_time
+    assert [o[0] for o in seen['14:56:50']] == [23]                       # the buy goes out at buy_time
+    assert [o[0] for o in account.orders] == [23]                         # and only once
+    assert C.calls.count(('get_market_data_ex', 5)) == 1                  # signals computed once
+
+
+def test_live_does_not_trade_on_a_day_without_its_bar(test_strategy, monkeypatch):
+    monkeypatch.setattr(entry, 'now', lambda: datetime.datetime(2021, 2, 27, 14, 58))  # a Saturday
+    C = live([10.0] * 299 + [11.0], names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
+    account = FakeAccount(cash=100000.0)
+    log = run_handlebar(C, account, account_id='A1')
+    assert log[-1] == 'chao: the main chart has no bar for 2021-02-27 (last 2021-02-23); not trading yet'
+    assert account.orders == [] and C.calls == []
+
+
+def test_live_sends_nothing_after_the_close(test_strategy, monkeypatch, tmp_path):
+    monkeypatch.setattr(entry, 'now', lambda: datetime.datetime(2021, 2, 23, 15, 30))
+    C = live([10.0] * 299 + [11.0], names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
+    account = FakeAccount(cash=100000.0)
+    log = run_handlebar(C, account, account_id='A1', dry_run=0, ledger_path=str(tmp_path / 'l.json'))
+    assert log[-1] == 'chao: 2021-02-23 started after 15:00:00; no orders today'
+    assert account.orders == []
+
+
+def test_a_failed_backtest_preparation_never_trades(test_strategy):
+    C = backtest_client([10.0] * 297 + [11.0, 10.0, 10.0], start='2021-02-01 00:00:00', end='2021-03-31 15:00:00')
+    account = FakeAccount()
+    with pytest.raises(ValueError, match='QMT bars end on 2021-02-23, before the backtest end 2021-03-31'):
+        run_backtest(C, account, [297])
+    entry.handlebar(C)  # later bars: stopped, no retry and no partial trades
+    assert account.orders == [] and C.calls.count(('get_market_data_ex', 5)) == 1
+
+
+def test_startup_reports_missing_qmt_calls():
+    class Bare(FakeContextInfo):
+        get_full_tick = None
+    with pytest.raises(ConfigError, match="QMT API not available: \\['get_full_tick'\\]"):
+        entry.init_with(Bare({}), FakeAccount().namespace())
 
 
 def test_older_clients_name_the_detail_call_get_instrumentdetail():

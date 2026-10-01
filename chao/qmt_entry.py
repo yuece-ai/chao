@@ -11,11 +11,13 @@ back attributes set on ContextInfo between handlebar calls.
   written in the TDX export layout to report_path, and each bar sends the
   same trades (date, side, shares) to passorder, so QMT's own backtest
   report shows them too.
-- Live, once a day on the last bar: per-stock static data is read on the
-  first tick; at signal_time today's signals are computed (the slow part);
-  at order_time the account and the latest prices are read and limit
-  orders price_margin through the last price are sent, or only printed
-  while dry_run is on (the default).
+- Live, on the last bar of a day whose bar is today's calendar date:
+  per-stock static data is read on the first tick; at signal_time today's
+  signals are computed (the slow part); at order_time the pending sells are
+  sent; at buy_time the buys are sized from the cash actually available
+  (sale proceeds included once the sells have filled) and sent. All orders
+  are limit orders price_margin through the last price, or only printed
+  while dry_run is on (the default). Nothing is sent from MARKET_CLOSE on.
 
 Settings precedence: GUI parameter > the account selected in QMT (the
 injected `account` variable) > CONFIG below > field default. QMT's parameter
@@ -45,6 +47,9 @@ BATCH_LIVE, BATCH_BACKTEST = 200, 25
 # QMT backtest capital: large enough that every TDX trade, each sized from
 # its own tdx_cash, can be filled at once in one account.
 BACKTEST_CAPITAL = 1e12
+MARKET_CLOSE = '15:00:00'
+# Bars of history wanted before a backtest's start: MA(250) plus REF lookback.
+WARMUP_DAYS = 400
 RUN = None           # the current Run; set by init()
 
 
@@ -78,7 +83,8 @@ FIELDS = [
     Field('dry_run', boolean, True, 'live only: print orders instead of placing them'),
     Field('max_positions', integer, 10, 'most stocks held at once; each buy is 1/N of total assets'),
     Field('signal_time', clock, '14:56:00', 'live only: when to compute the day\'s signals (~25 s)'),
-    Field('order_time', clock, '14:56:45', 'live only: when to send the orders'),
+    Field('order_time', clock, '14:56:45', 'live only: when to send the sells'),
+    Field('buy_time', clock, '14:56:50', 'live only: when to send the buys, after the sells have filled'),
     Field('price_margin', number, 0.015, 'live only: limit price this far through the last price'),
     Field('ledger_path', text, '', 'live only: JSON file of the stocks chao bought and their pending sells'),
     Field('report_path', text, '', 'backtest only: directory for the TDX-layout trade lists'),
@@ -99,7 +105,10 @@ class Run:
         self.universe = None          # live: today's stock list
         self.static_date = None       # live: day the static data was read
         self.signals = {}             # live: {date: (buys, {symbol: [strategy]})}
-        self.done = set()             # live: dates already traded
+        self.sold = set()             # live: dates whose sells were sent
+        self.done = set()             # live: dates fully traded
+        self.waiting = None           # live: last day reported as not tradable
+        self.failed = False           # backtest: preparation failed; stop
 
 
 def gui_values(namespace):
@@ -130,8 +139,8 @@ def check(settings, C, backtest):
         raise ConfigError('priority must list every strategy run; missing {}'.format(missing))
     if not settings.account_id and (backtest or not settings.dry_run):
         raise ConfigError('account_id is required to trade or backtest')
-    if settings.order_time < settings.signal_time:
-        raise ConfigError('order_time must not be before signal_time')
+    if not settings.signal_time <= settings.order_time <= settings.buy_time < MARKET_CLOSE:
+        raise ConfigError('need signal_time <= order_time <= buy_time < {}'.format(MARKET_CLOSE))
     if not backtest and not settings.dry_run and not settings.ledger_path:
         raise ConfigError('ledger_path is required for live orders, so manual holdings are never sold')
 
@@ -166,27 +175,9 @@ def report(found, errors):
         print('chao: skipped strategy={} {}: {}'.format(sid, symbol, message))
 
 
-def trade(C, run, date, buys, sells_today, limits, placing):
-    """Plan and send (or print) one live day's orders; returns them.
-
-    buys: [(strategy, symbol, 'buy')]; sells_today: {symbol: [strategy ids
-    with a sell signal]}; limits: {(side, symbol): limit price}. A held stock
-    is sold when the strategy that bought it signals a sell, and stays
-    pending until it is gone, as in the TDX backtest.
-    """
+def send(C, run, date, orders, limits, placing):
+    """Send (or print) planned live orders at their limit prices."""
     settings, ledger = run.context.settings, run.ledger
-    book = read_book(run.api, settings.account_id, ledger.owned, live=True)
-    if placing:
-        ledger.keep(book.owned)
-    pending = sorted(s for s in book.owned
-                     if ledger.selling(s) or ledger.owner(s) in sells_today.get(s, []))
-    if placing:
-        for symbol in pending:
-            ledger.sell(symbol)
-    sells = [(ledger.owner(s), s, 'sell') for s in pending]
-    buy_prices = {symbol: limits.get(('buy', symbol)) for _, symbol, _ in buys}
-    sell_prices = {symbol: limits[('sell', symbol)] for symbol in pending if ('sell', symbol) in limits}
-    orders = plan_orders(buys + sells, book, buy_prices, settings.max_positions, settings.priority, sell_prices)
     for order in orders:
         price = limits.get((order.side, order.symbol))
         if price is None:
@@ -198,7 +189,48 @@ def trade(C, run, date, buys, sells_today, limits, placing):
                 ledger.bought(order.symbol, order.strategy)  # at once, so a later failure cannot orphan it
         print('chao: order {} {} {} {} strategy={} limit={:.2f}{}'.format(
             date, order.side, order.symbol, order.volume, order.strategy, price, '' if placing else ' (dry-run)'))
-    return orders
+
+
+def limits_for(run, symbols, date):
+    """{(side, symbol): limit price} from the latest ticks and today's limits."""
+    settings, market = run.context.settings, run.context.market
+    limits = {}
+    for symbol, price in market.latest_prices(sorted(symbols), date).items():
+        down, up = market.price_limits(symbol)
+        for side in ('buy', 'sell'):
+            limits[side, symbol] = limit_price(side, price, settings.price_margin, down, up)
+    return limits
+
+
+def live_sells(C, run, date):
+    """A held stock is sold when the strategy that bought it signals a sell,
+    and stays pending until it is gone, as in the TDX backtest."""
+    settings, ledger = run.context.settings, run.ledger
+    placing = not settings.dry_run
+    _, sells_today = run.signals[date]
+    book = read_book(run.api, settings.account_id, ledger.owned, live=True)
+    if placing:
+        ledger.keep(book.owned)
+    pending = sorted(s for s in book.owned
+                     if ledger.selling(s) or ledger.owner(s) in sells_today.get(s, []))
+    if placing:
+        for symbol in pending:
+            ledger.sell(symbol)
+    orders = plan_orders([(ledger.owner(s), s, 'sell') for s in pending], book, {},
+                         settings.max_positions, settings.priority)
+    send(C, run, date, orders, limits_for(run, pending, date), placing)
+
+
+def live_buys(C, run, date):
+    """Buys sized from the cash available now; the broker freezes the limit
+    price, so that is the price used for sizing."""
+    settings, ledger = run.context.settings, run.ledger
+    buys, _ = run.signals[date]
+    book = read_book(run.api, settings.account_id, ledger.owned, live=True)
+    limits = limits_for(run, {symbol for _, symbol, _ in buys}, date)
+    prices = {symbol: limits.get(('buy', symbol)) for _, symbol, _ in buys}
+    orders = plan_orders(buys, book, prices, settings.max_positions, settings.priority)
+    send(C, run, date, orders, limits, not settings.dry_run)
 
 
 def prepare_backtest(run, start, end):
@@ -210,7 +242,7 @@ def prepare_backtest(run, start, end):
     strategies = [s for _, s in sorted(run.context.strategies.items())]
     events = {sid: [] for sid in run.context.strategies}
     summaries = {sid: [] for sid in run.context.strategies}
-    names, errors, run.trades = {}, [], {}
+    names, errors, trades = {}, [], {}
     for batch in batches(market.universe(), BATCH_BACKTEST):
         market.prefetch(batch, run.index_codes)
         bars, results, bad = panel_signals(strategies, market, batch)
@@ -223,23 +255,29 @@ def prepare_backtest(run, start, end):
                 for e in rows:
                     e.update(strategy=sid, code=symbol[2:])
                     side = 'buy' if e['direction'] == BUY else 'sell'
-                    run.trades.setdefault(e['date'], []).append(Order(side, symbol, e['quantity'], sid))
+                    trades.setdefault(e['date'], []).append(Order(side, symbol, e['quantity'], sid))
                 events[sid] += rows
-    last = min(c.index[-1] for c in market.index_closes().values()).strftime('%Y-%m-%d')
+    closes = market.index_closes().values()
+    last = min(c.index[-1] for c in closes).strftime('%Y-%m-%d')
     if last < end:
         raise MissingInput('QMT bars end on {}, before the backtest end {}; download the history first'
                            .format(last, end))
+    first = max(c.index[0] for c in closes)
+    if (pd.Timestamp(start) - first).days < WARMUP_DAYS:
+        print('chao: warning: index history starts {}, less than {} days before {}; download older bars, '
+              'or signals near the start differ from TDX'.format(first.date(), WARMUP_DAYS, start))
     report([], errors)
     for sid in sorted(summaries):
         print('chao: tdx ' + summary_line(sid, summaries[sid]))
     if settings.report_path:
         for path in write_exports(settings.report_path, events, names):
             print('chao: wrote ' + path)
-    same_day = sorted({(o.symbol, d) for d, orders in run.trades.items() for o in orders if o.side == 'sell'
+    same_day = sorted({(o.symbol, d) for d, orders in trades.items() for o in orders if o.side == 'sell'
                        and any(b.side == 'buy' and b.symbol == o.symbol and b.strategy == o.strategy for b in orders)})
     for symbol, day in same_day:
         print('chao: {} {} is bought and sold on the same bar in TDX; QMT applies T+1 and cannot sell it that day'
               .format(day, symbol))
+    run.trades = trades  # only a complete preparation is used
     print('chao: backtest ready: {} trades, {} skipped, {:.0f}s'.format(
         sum(len(v) for v in events.values()), len(errors), time.time() - started))
 
@@ -257,6 +295,7 @@ def refresh_static(run, date):
     """First tick of a live day: today's universe and per-stock static data."""
     started = time.time()
     market = run.context.market
+    run.static_date = date  # before reading: a failure is reported once, not on every tick
     market.reset_static()
     run.universe = market.universe()
     for symbol in run.universe:
@@ -264,7 +303,6 @@ def refresh_static(run, date):
             market.load_static(symbol)
         except MissingInput:
             pass  # reported by the signal scan, which needs the same data
-    run.static_date = date
     print('chao: static data for {} stocks read in {:.0f}s'.format(len(run.universe), time.time() - started))
 
 
@@ -292,34 +330,35 @@ def live_signals(run, date):
         len(found), len(errors), stale, time.time() - started))
 
 
-def live_orders(C, run, date):
-    """Size and send today's orders at limit prices from the latest ticks."""
-    settings, market = run.context.settings, run.context.market
-    if not settings.account_id:
-        print('chao: no account_id, so orders are not planned')
-        return
-    buys, sells = run.signals[date]
-    symbols = sorted({symbol for _, symbol, _ in buys} | run.ledger.owned)
-    last = market.latest_prices(symbols, date)
-    limits = {}
-    for symbol, price in last.items():
-        down, up = market.price_limits(symbol)
-        for side in ('buy', 'sell'):
-            limits[side, symbol] = limit_price(side, price, settings.price_margin, down, up)
-    # Buys are sized at their limit price: that is the cash the broker freezes.
-    trade(C, run, date, buys, sells, limits, placing=not settings.dry_run)
-
-
-def now_hms():
-    return datetime.datetime.now().strftime('%H:%M:%S')
+def now():
+    return datetime.datetime.now()
 
 
 def init(C):
     init_with(C, globals())
 
 
+REQUIRED_CALLS = ['get_market_data_ex', 'get_divid_factors', 'get_financial_data', 'get_stock_list_in_sector',
+                  'get_bar_timetag', 'get_full_tick', 'is_last_bar']
+
+
+def check_environment(C, namespace):
+    """Print the client environment and fail fast on a missing API."""
+    import sys
+    import numpy as np
+    print('chao: python {} pandas {} numpy {}'.format(sys.version.split()[0], pd.__version__, np.__version__))
+    missing = [m for m in REQUIRED_CALLS if not callable(getattr(C, m, None))]
+    if not (callable(getattr(C, 'get_instrument_detail', None)) or callable(getattr(C, 'get_instrumentdetail', None))):
+        missing.append('get_instrument_detail')
+    missing += [g for g in ('passorder', 'get_trade_detail_data')
+                if not callable(namespace.get(g, getattr(builtins, g, None)))]
+    if missing:
+        raise ConfigError('QMT API not available: {}'.format(missing))
+
+
 def init_with(C, namespace):
     global RUN
+    check_environment(C, namespace)
     RUN, lines = build_run(C, namespace)
     if RUN.backtest:
         C.capital = BACKTEST_CAPITAL  # every TDX trade has its own tdx_cash
@@ -330,22 +369,54 @@ def init_with(C, namespace):
 
 def handlebar(C):
     run = RUN
+    if run.failed:
+        return
     run.context.market.C = C  # QMT passes the ContextInfo to use for this call
-    date = qmt_date(C.get_bar_timetag(C.barpos)).strftime('%Y-%m-%d')
     if run.backtest:
-        if run.trades is None:
-            prepare_backtest(run, qmt_date(C.start).strftime('%Y-%m-%d'), qmt_date(C.end).strftime('%Y-%m-%d'))
-        backtest_bar(C, run, date)
+        backtest_tick(C, run)
+    else:
+        live_tick(C, run)
+
+
+def backtest_tick(C, run):
+    if run.trades is None:
+        run.failed = True  # until the preparation completes: never trade on a partial list
+        prepare_backtest(run, qmt_date(C.start).strftime('%Y-%m-%d'), qmt_date(C.end).strftime('%Y-%m-%d'))
+        run.failed = False
+    backtest_bar(C, run, qmt_date(C.get_bar_timetag(C.barpos)).strftime('%Y-%m-%d'))
+
+
+def live_tick(C, run):
+    if not C.is_last_bar():
         return
-    if not C.is_last_bar() or date in run.done:
+    moment = now()
+    today, clock_now = moment.strftime('%Y-%m-%d'), moment.strftime('%H:%M:%S')
+    if today in run.done:
         return
-    if run.static_date != date:
-        refresh_static(run, date)
-    now = now_hms()
+    bar_day = qmt_date(C.get_bar_timetag(C.barpos)).strftime('%Y-%m-%d')
+    if bar_day != today:
+        if run.waiting != today:  # a holiday, or before the day's first bar
+            print('chao: the main chart has no bar for {} (last {}); not trading yet'.format(today, bar_day))
+            run.waiting = today
+        return
     settings = run.context.settings
-    if date not in run.signals and now >= settings.signal_time:
-        run.signals[date] = ([], {})  # a failure below is reported once, not on every tick
-        live_signals(run, date)
-    if date in run.signals and now >= settings.order_time:
-        run.done.add(date)
-        live_orders(C, run, date)
+    if clock_now >= MARKET_CLOSE:
+        run.done.add(today)
+        print('chao: {} started after {}; no orders today'.format(today, MARKET_CLOSE))
+        return
+    if run.static_date != today:
+        refresh_static(run, today)
+    if today not in run.signals and clock_now >= settings.signal_time:
+        run.signals[today] = ([], {})  # a failure below is reported once; pending sells still go out
+        live_signals(run, today)
+    if not settings.account_id:
+        if today in run.signals:
+            run.done.add(today)
+            print('chao: no account_id, so orders are not planned')
+        return
+    if today in run.signals and today not in run.sold and clock_now >= settings.order_time:
+        run.sold.add(today)
+        live_sells(C, run, today)
+    if today in run.sold and clock_now >= settings.buy_time:
+        run.done.add(today)
+        live_buys(C, run, today)
