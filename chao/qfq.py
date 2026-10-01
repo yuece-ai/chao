@@ -13,9 +13,9 @@ transform takes an explicit as-of date.  These rules reproduce 15,115 of the
 15,118 reference trade prices; the three exceptions sit within 5e-5 of a
 half-fen boundary.
 """
-from dataclasses import dataclass
 from decimal import Decimal, ROUND_HALF_UP
 from fractions import Fraction
+from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
@@ -23,8 +23,7 @@ PRICE_COLUMNS = ('open', 'high', 'low', 'close')
 XRXD = 1
 
 
-@dataclass(frozen=True)
-class ExRights:
+class ExRights(NamedTuple):
     date: pd.Timestamp
     cash: Fraction          # C1, yuan per 10 shares
     rights_price: Fraction  # C2, yuan per share
@@ -62,7 +61,7 @@ def _round_cents(cents, a, b):
 def forward_adjust(raw, events):
     """Return raw OHLC bars forward-adjusted by events (see module doc)."""
     out = raw[list(PRICE_COLUMNS)].copy()
-    cents = {k: np.rint(raw[k].to_numpy() * 100).astype(np.int64) for k in PRICE_COLUMNS}
+    cents = {k: np.rint(raw[k].values * 100).astype(np.int64) for k in PRICE_COLUMNS}
     a, b = Fraction(1), Fraction(0)
     right = len(raw)
     for event in reversed(events):

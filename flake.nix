@@ -7,7 +7,7 @@
     python = pkgs.python3.withPackages (ps: [ ps.numpy ps.pandas ps.pyarrow ps.pytest ]);
   in {
     devShells.${system}.default = pkgs.mkShell {
-      packages = [ python ];
+      packages = [ python pkgs.vermin ];
       OPENBLAS_NUM_THREADS = "1";
       OMP_NUM_THREADS = "1";
       MKL_NUM_THREADS = "1";
