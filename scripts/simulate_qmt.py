@@ -97,7 +97,6 @@ def main():
     C.start, C.end = args.start + ' 00:00:00', args.end + ' 15:00:00'
     account = SimAccount(1e12, 0.0005, 0.0003)
     module.passorder, module.get_trade_detail_data = account.passorder, account.get_trade_detail_data
-    module.download_shares = lambda codes: None  # the TDX shares are served already; xtquant is QMT-only
     log = io.StringIO()
     started = time.time()
     with redirect_stdout(log):

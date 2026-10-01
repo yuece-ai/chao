@@ -41,7 +41,7 @@ from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.market import Context, MissingInput
 from chao.orders import CAGE_RATE, Order, limit_price, plan_orders
-from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, download_shares, probe, qmt_date, to_qmt
+from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, number, text
 from chao.replay import BUY, ReplaySpec, replay
@@ -461,11 +461,6 @@ def start(C):
         print("chao: warning: the backtest capital was not raised in init; set it high in QMT's backtest "
               "settings, or set mode='backtest', so no mirrored trade is short of cash")
     market = run.context.market
-    if run.backtest:
-        started = time.time()
-        codes = [to_qmt(s) for s in market.universe()]
-        download_shares(codes)
-        print('chao: share table downloaded for {} stocks in {:.0f}s'.format(len(codes), time.time() - started))
     for line in probe(C, market.sectors, market.end_time, not run.backtest, now().strftime('%Y-%m-%d %H:%M:%S')):
         print('chao: ' + line)
     RUN = run

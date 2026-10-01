@@ -352,14 +352,6 @@ def short(value):
     return text if len(text) <= 200 else text[:200] + '...'
 
 
-def download_shares(codes):
-    """Backtest: download the share table through QMT's own data SDK,
-    xtquant, which ships with the client. The built-in API has no financial
-    download; get_financial_data only reads what has been downloaded."""
-    from xtquant import xtdata
-    xtdata.download_financial_data(codes, ['Capital'])  # synchronous
-
-
 def financial_diagnosis(C):
     """Shown when the share table is all NaN: the other ways QMT may hold
     total shares, and where its local financial files are."""
