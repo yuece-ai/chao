@@ -17,8 +17,8 @@ from chao.catalog import strategy_files
 
 ROOT = Path(__file__).resolve().parent.parent
 # Dependency order: each module only uses names from modules above it.
-MODULES = ['indicators', 'settings', 'market', 'formulas', 'qfq', 'signals',
-           'qmt_source', 'catalog', 'qmt_entry']
+MODULES = ['indicators', 'settings', 'market', 'formulas', 'qfq', 'signals', 'orders',
+           'qmt_source', 'qmt_trade', 'catalog', 'qmt_entry']
 
 
 class BundleError(Exception):

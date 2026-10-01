@@ -14,7 +14,8 @@ from chao.market import INDEX_SYMBOLS, MarketData, MissingInput
 from chao.qfq import ExRights, forward_adjust
 
 BAR_FIELDS = ['open', 'high', 'low', 'close', 'amount']
-HISTORY_BARS = 400  # MA(250) plus REF lookback, with margin
+HISTORY_BARS = 400  # live: MA(250) plus REF lookback, with margin
+ALL_BARS = -1       # backtest: every bar QMT has locally
 # Formula index code -> QMT code. TDX's 999999 is QMT's 000001.SH.
 QMT_INDEX = {'999999': '000001.SH', '399001': '399001.SZ', '399006': '399006.SZ',
              '000688': '000688.SH', '899050': '899050.BJ'}
@@ -70,13 +71,15 @@ def qmt_date(value):
 
 
 class QmtMarket(MarketData):
-    def __init__(self, context_info, sectors):
+    def __init__(self, context_info, sectors, history_bars):
         self.C = context_info
         self.sectors = sectors
+        self.history_bars = history_bars
         self._index_closes = None
+        self._raw = {}  # symbol -> unadjusted bars, kept for order sizing
 
     def _unadjusted(self, qmt_codes):
-        data = self.C.get_market_data_ex(BAR_FIELDS, qmt_codes, period='1d', count=HISTORY_BARS,
+        data = self.C.get_market_data_ex(BAR_FIELDS, qmt_codes, period='1d', count=self.history_bars,
                                          dividend_type='none', fill_data=False, subscribe=False)
         frames = {}
         for code in qmt_codes:
@@ -96,11 +99,19 @@ class QmtMarket(MarketData):
 
     def bars(self, symbol):
         code = to_qmt(symbol)
-        raw = self._unadjusted([code])[code]
+        raw = self._raw[symbol] = self._unadjusted([code])[code]
         events = ex_rights_from_divid(self.C.get_divid_factors(code), raw.index[-1])
         adjusted = forward_adjust(raw, events)
         adjusted['amount'] = raw['amount']
         return adjusted
+
+    def unadjusted_close(self, symbol, date):
+        """Traded (unadjusted) close used to size orders; None if unknown."""
+        raw = self._raw.get(symbol)
+        if raw is None:
+            raw = self._raw[symbol] = self._unadjusted([to_qmt(symbol)])[to_qmt(symbol)]
+        close = raw['close'].get(pd.Timestamp(date))
+        return None if close is None or close != close else float(close)
 
     def index_closes(self):
         if self._index_closes is None:

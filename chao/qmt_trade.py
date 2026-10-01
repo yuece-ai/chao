@@ -1,0 +1,58 @@
+"""Account state and order placement through QMT's trading API.
+
+Like chao.qmt_source, this receives the ContextInfo and imports nothing
+from QMT. passorder and get_trade_detail_data are QMT globals, so they are
+passed in as an `api` object; tests pass a fake.
+"""
+import json
+from pathlib import Path
+from chao.orders import Book, Holding
+from chao.qmt_source import to_qmt
+
+STOCK_BUY, STOCK_SELL = 23, 24
+BY_SHARES = 1101      # volume is a share count
+LATEST_PRICE = 5      # fill at the latest price; the bar close in a backtest
+STRATEGY_NAME = 'chao'
+# Live orders are placed at once on the last bar; backtests use QMT's
+# standard bar handling.
+QUICK_LIVE, QUICK_BACKTEST = 2, 0
+
+
+class QmtApi:
+    """The QMT globals the trade layer uses."""
+
+    def __init__(self, passorder, get_trade_detail_data):
+        self.passorder = passorder
+        self.get_trade_detail_data = get_trade_detail_data
+
+
+def read_book(api, account_id, owned):
+    accounts = api.get_trade_detail_data(account_id, 'stock', 'ACCOUNT')
+    if not accounts:
+        raise RuntimeError('QMT returned no account data for {!r}'.format(account_id))
+    holdings = {}
+    for p in api.get_trade_detail_data(account_id, 'stock', 'POSITION'):
+        symbol = p.m_strExchangeID + p.m_strInstrumentID
+        holdings[symbol] = Holding(int(p.m_nVolume), int(p.m_nCanUseVolume))
+    # Forget owned symbols that are no longer held (sold, or never filled).
+    held = {s for s, h in holdings.items() if h.volume > 0}
+    return Book(float(accounts[0].m_dAvailable), float(accounts[0].m_dBalance), holdings, set(owned) & held)
+
+
+def place(api, C, account_id, order, quick):
+    op = STOCK_BUY if order.side == 'buy' else STOCK_SELL
+    api.passorder(op, BY_SHARES, account_id, to_qmt(order.symbol), LATEST_PRICE, -1, order.volume,
+                  STRATEGY_NAME, quick, 'chao-s{}'.format(order.strategy), C)
+
+
+class Ledger:
+    """Symbols chao bought and still tracks; persisted when a path is set."""
+
+    def __init__(self, path):
+        self.path = Path(path) if path else None
+        self.owned = set(json.loads(self.path.read_text())) if self.path and self.path.exists() else set()
+
+    def replace(self, owned):
+        self.owned = set(owned)
+        if self.path:
+            self.path.write_text(json.dumps(sorted(self.owned)))

@@ -55,7 +55,7 @@ def test_qmt_adapter_reproduces_the_tdx_path():
     from chao.tdx_source import TdxMarket
     gbbq = load_gbbq(GBBQ)
     symbols = [equity_symbol(c) for c in SAMPLE]
-    qmt = QmtMarket(tdx_as_qmt(symbols, gbbq), sectors=())
+    qmt = QmtMarket(tdx_as_qmt(symbols, gbbq), (), HISTORY_BARS)
     tdx = TdxMarket(RAW, QFQ_ROOT, gbbq, {s[2:]: 'STOCK' + s for s in symbols})
     strategies = load_strategies(strategy_files())
     for symbol in symbols:

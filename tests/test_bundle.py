@@ -6,16 +6,26 @@ from contextlib import redirect_stdout
 import pytest
 import chao.qmt_entry as entry
 from scripts.bundle_qmt import BundleError, bundle, split_module
-from tests.qmt_fake import FakeContextInfo, daily
+from tests.qmt_fake import FakeAccount, FakeContextInfo, daily
 from tests.test_qmt import INDEX_BARS
 
 
 def run_strategy(module):
-    bars = dict(INDEX_BARS, **{'000001.SZ': daily([10.0] * 300)})
+    """init + handlebar in live dry-run mode, with QMT's globals faked."""
+    bars = dict(INDEX_BARS, **{'000001.SZ': daily([10.0] * 299 + [11.0])})
     C = FakeContextInfo(bars, names={'000001.SZ': 'X'}, sectors={'沪深A股': ['000001.SZ']})
-    with redirect_stdout(io.StringIO()) as out:
-        module.init(C)
-        module.handlebar(C)
+    account = FakeAccount(cash=100000.0)
+    saved = dict(module.CONFIG)
+    module.CONFIG.update(trade_time='00:00', account_id='A1')
+    module.passorder, module.get_trade_detail_data = account.passorder, account.get_trade_detail_data
+    try:
+        with redirect_stdout(io.StringIO()) as out:
+            module.init(C)
+            module.handlebar(C)
+    finally:
+        module.CONFIG.clear(); module.CONFIG.update(saved)
+        del module.passorder, module.get_trade_detail_data
+    assert account.orders == []
     return out.getvalue()
 
 
