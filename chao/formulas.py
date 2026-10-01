@@ -1,32 +1,48 @@
-"""Evaluate the original formula expressions using a restricted AST."""
+"""TDX strategy formulas: parse the formula text and evaluate it over bound data.
+
+The engine knows the TDX expression syntax and nothing about any strategy.
+Indicators come from chao.indicators; market data is bound by bind().
+"""
 import ast
 import re
-from pathlib import Path
+from typing import List, NamedTuple, Tuple
 import numpy as np
 import pandas as pd
 from chao.data import MissingInput
+from chao.indicators import INDICATORS
+
+# Output variables every strategy formula must define (TDX identifiers).
+BUY_KEY, SELL_KEY = '买入条件', '卖出条件'
+ASSIGNMENT = re.compile(r'([A-Za-z][A-Za-z0-9]*|买入条件|卖出条件)\s*:=\s*([^;]+);')
+HEADER = re.compile(r'\{策略[0-9]+-([^}]+)\}')
 
 
-def strategies(path):
-    text = Path(path).read_text(encoding='utf-8')
-    text = re.sub(r'\{[^}]*\}', '', text)
-    matches = list(re.finditer(r'策略([1-7])-([^\s：:]+)[：:]?', text))
+class Strategy(NamedTuple):
+    id: int
+    name: str
+    assignments: List[Tuple[str, str]]
+
+
+def parse_strategy(sid, text):
+    """Parse one strategy formula file."""
+    header = HEADER.search(text)
+    body = re.sub(r'\{[^}]*\}', '', text)
+    assignments = [(k, e.strip()) for k, e in ASSIGNMENT.findall(body)]
+    keys = [k for k, _ in assignments]
+    if BUY_KEY not in keys or SELL_KEY not in keys:
+        raise ValueError('strategy {} must define {} and {}'.format(sid, BUY_KEY, SELL_KEY))
+    return Strategy(sid, header.group(1) if header else str(sid), assignments)
+
+
+def load_strategies(files):
+    """{file name: formula text} -> {id: Strategy}; the id is the name prefix."""
     result = {}
-    for i, match in enumerate(matches):
-        section = text[match.end(): matches[i+1].start() if i+1 < len(matches) else len(text)]
-        assignments = re.findall(r'([A-Za-z][A-Za-z0-9]*|买入条件|卖出条件)\s*:=\s*([^;]+);', section)
-        if not assignments or assignments[-1][0] != '卖出条件':
-            raise ValueError(f'Incomplete source formula: {match.group(0)}')
-        result[int(match.group(1))] = {'name': match.group(2), 'assignments': assignments}
-    if set(result) != set(range(1,8)):
-        raise ValueError('Expected exactly seven original strategies')
+    for file_name, text in files.items():
+        sid = int(file_name.split('-', 1)[0])
+        if sid in result:
+            raise ValueError('duplicate strategy id {}'.format(sid))
+        result[sid] = parse_strategy(sid, text)
     return result
-
-
-def MA(x, n): return x.rolling(int(n), min_periods=int(n)).mean()
-def REF(x, n): return x.shift(int(n))
-def HHV(x, n): return x.rolling(int(n), min_periods=int(n)).max()
-def LLV(x, n): return x.rolling(int(n), min_periods=int(n)).min()
 
 
 def parse(expression):
@@ -37,8 +53,21 @@ def parse(expression):
     return ast.parse(expression.strip(), mode='eval').body
 
 
+def literal(node):
+    """Literal value of a number or string node; Python 3.6 has no ast.Constant."""
+    kind = type(node).__name__
+    if kind == 'Constant' or kind == 'NameConstant':
+        return node.value
+    if kind == 'Num':
+        return node.n
+    if kind == 'Str':
+        return node.s
+    raise ValueError('not a literal')
+
+
 def evaluate(node, env):
-    if isinstance(node, ast.Constant): return node.value
+    if type(node).__name__ in ('Constant', 'Num', 'Str', 'NameConstant'):
+        return literal(node)
     if isinstance(node, ast.Name): return env[node.id]
     if isinstance(node, ast.Call):
         if not isinstance(node.func,ast.Name) or node.keywords:
@@ -71,25 +100,31 @@ def evaluate(node, env):
             else: raise ValueError('Unsupported comparison')
             result=result & value; a=b
         return result
-    raise ValueError(f'Unsupported formula AST: {ast.dump(node)}')
+    raise ValueError('Unsupported formula AST: {}'.format(ast.dump(node)))
+
+
+def bind(frame, indices, indexc, name, shares):
+    """Formula names that read market data for one stock."""
+    def index(code): return indices[code].reindex(frame.index)
+    def finance(field):
+        if field != 1: raise ValueError('Unknown FINANCE field {}'.format(field))
+        if shares is None: raise MissingInput('FINANCE(1) needs a share-capital series')
+        return shares
+    return dict(FINANCE=finance, INDEX=index,
+                # Missing names must not pass the formula's ST exclusion.
+                NAMELIKE=lambda prefix: (None if not name else int(name.startswith(prefix))),
+                CLOSE=frame.close, HIGH=frame.high, LOW=frame.low, AMO=frame.amount,
+                INDEXC=indexc.reindex(frame.index))
 
 
 def formula_environment(strategy, frame, indices, indexc, name, shares):
-    def index(code): return indices[code].reindex(frame.index)
-    def finance(field):
-        if field != 1: raise ValueError(f'Unknown FINANCE field {field}')
-        if shares is None: raise MissingInput('FINANCE(1) needs a share-capital series')
-        return shares
-    env = dict(MA=MA,REF=REF,HHV=HHV,LLV=LLV,FINANCE=finance,
-               # Missing names must not pass the formula's ST exclusion.
-               NAMELIKE=lambda prefix: (None if not name else int(name.startswith(prefix))),INDEX=index,
-               CLOSE=frame.close,HIGH=frame.high,LOW=frame.low,AMO=frame.amount,
-               INDEXC=indexc.reindex(frame.index))
-    for key,expression in strategy['assignments']:
+    env = dict(INDICATORS)
+    env.update(bind(frame, indices, indexc, name, shares))
+    for key,expression in strategy.assignments:
         env[key]=evaluate(parse(expression),env)
     return env
 
 
 def signals(strategy, frame, indices, indexc, name, shares):
     env = formula_environment(strategy, frame, indices, indexc, name, shares)
-    return pd.DataFrame({'buy':env['买入条件'],'sell':env['卖出条件']},index=frame.index).fillna(False)
+    return pd.DataFrame({'buy':env[BUY_KEY],'sell':env[SELL_KEY]},index=frame.index).fillna(False)

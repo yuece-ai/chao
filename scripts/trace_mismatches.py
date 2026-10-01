@@ -8,14 +8,15 @@ from collections import defaultdict, Counter
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import pandas as pd
-from chao.formulas import strategies, formula_environment, evaluate, parse
+from chao.catalog import strategy_files
+from chao.formulas import load_strategies, formula_environment, evaluate, parse
 from chao.reference import read_references
 from chao.gbbq import load_gbbq, total_shares
 from chao.data import INDEX_SYMBOLS, board_index, equity_symbol, load_prices
 
 G={}
 def initialize(cfg):
-    G['cfg']=cfg; G['strategies']=strategies('origin/策略源码.txt')
+    G['cfg']=cfg; G['strategies']=load_strategies(strategy_files())
     G['idx']={k:load_prices(cfg,sym).close for k,sym in INDEX_SYMBOLS.items()}
     G['gbbq']=load_gbbq(cfg['gbbq_path'])
 
@@ -41,7 +42,7 @@ def inspect(job):
         d=pd.Timestamp(r['date']);side='买入条件' if r['direction']=='买开' else '卖出条件'; point={'strategy':sid,'code':code,'date':r['date'],'direction':r['direction'],'kind':r['kind'],'indexc':idxcode}
         if d not in f.index:point['error']='date missing';report.append(point);continue
         point['formula_condition']=value(env[side],d);point['bar']={k:value(f[k],d) for k in ['close','high','low','amount']};point['failed_assignments']=[];point['comparisons']=[]
-        for key,expr in st['assignments']:
+        for key,expr in st.assignments:
             if key=='A' or key=='买入条件':continue
             if side=='卖出条件' and key!='卖出条件':continue
             if side=='买入条件' and key=='卖出条件':continue

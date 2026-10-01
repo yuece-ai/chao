@@ -7,12 +7,12 @@ from pathlib import Path
 import pandas as pd
 from chao.data import (INDEX_SYMBOLS, MissingInput, board_index, equity_files,
                        equity_symbol, load_prices)
-from chao.formulas import strategies, signals
+from chao.catalog import strategy_files
+from chao.formulas import load_strategies, signals
 from chao.gbbq import load_gbbq, total_shares
 from chao.replay import ReplaySpec, replay
 from chao.reference import read_references, score
 
-SOURCE = 'origin/策略源码.txt'
 MIN_BARS = 260
 G = {}
 
@@ -48,7 +48,7 @@ def share_capital(code, index):
 
 
 def init_worker(config, names):
-    G.update(config=config, names=names, strategies=strategies(SOURCE),
+    G.update(config=config, names=names, strategies=load_strategies(strategy_files()),
              spec=replay_spec(config), indices={})
     G['gbbq'] = load_gbbq(config['gbbq_path'])
 

@@ -1,5 +1,9 @@
 import pandas as pd
-from chao.formulas import evaluate,parse,MA,REF,HHV,LLV,strategies
+import re
+from pathlib import Path
+from chao.catalog import strategy_files
+from chao.formulas import ASSIGNMENT,evaluate,load_strategies,parse
+from chao.indicators import MA,REF,HHV,LLV
 from chao.reference import cents, score
 from chao.replay import ReplaySpec, replay
 
@@ -15,9 +19,14 @@ def test_functions():
  assert REF(x,1).iloc[-1]==3; assert HHV(x,2).iloc[-1]==3
  assert LLV(x,2).iloc[-1]==2
 
-def test_source_complete():
- s=strategies('origin/策略源码.txt'); assert set(s)==set(range(1,8))
- assert all(v['assignments'][-1][1]=='CLOSE<=MA(CLOSE,20)' for v in s.values())
+def test_strategy_files_match_the_tdx_export():
+ # The per-strategy files must stay identical to the user's TDX source,
+ # which is what the parity in PARITY.md was measured against.
+ text=re.sub(r'\{[^}]*\}','',Path('origin/策略源码.txt').read_text(encoding='utf-8'))
+ heads=list(re.finditer(r'策略([1-7])-',text))
+ origin={int(h.group(1)):[(k,e.strip()) for k,e in ASSIGNMENT.findall(text[h.end():heads[i+1].start() if i+1<len(heads) else len(text)])] for i,h in enumerate(heads)}
+ loaded=load_strategies(strategy_files())
+ assert {sid:s.assignments for sid,s in loaded.items()}==origin
 
 def test_score_keeps_codes():
  base={'date':'2020-01-01','direction':'买开','price':1.0,'quantity':10,'amount':10.0,'fee':0.01,'profit':0.0,'cash':9.99}
