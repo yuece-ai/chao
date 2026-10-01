@@ -16,6 +16,7 @@ Data is read in layers:
   yesterday, final for the day) and adjusts them once; load_today() then
   only appends today's bar from the latest ticks.
 """
+import os
 import re
 from decimal import Decimal, ROUND_HALF_UP
 from fractions import Fraction
@@ -343,6 +344,36 @@ def short(value):
     return text if len(text) <= 200 else text[:200] + '...'
 
 
+def financial_diagnosis(C):
+    """Shown when the share table is all NaN: the other ways QMT may hold
+    total shares, and where its local financial files are."""
+    lines = []
+    for field in (TOTAL_CAPITAL, '股本表.总股本'):
+        for report_type in ('announce_time', 'report_time'):
+            try:
+                table = C.get_financial_data([field], [PROBE_STOCK], '20200101', '20991231', report_type=report_type)
+                known = table.dropna() if hasattr(table, 'dropna') else table
+                lines.append('  {} {}: {} non-NaN {}'.format(field, report_type, type(table).__name__, short(known)))
+            except Exception as exc:  # each variant is reported, none decides anything
+                lines.append('  {} {}: {}: {}'.format(field, report_type, type(exc).__name__, exc))
+    calls = [('get_total_share', lambda: C.get_total_share(PROBE_STOCK)),
+             ('TotalVolume', lambda: (getattr(C, 'get_instrument_detail', None) or C.get_instrumentdetail)(
+                 PROBE_STOCK).get('TotalVolume'))]
+    for name, call in calls:
+        try:
+            lines.append('  {}: {!r}'.format(name, call()))
+        except Exception as exc:
+            lines.append('  {}: {}: {}'.format(name, type(exc).__name__, exc))
+    base = os.path.dirname(os.getcwd())
+    lines.append('  cwd {}'.format(os.getcwd()))
+    for path, dirs, files in os.walk(base):
+        if path[len(base):].count(os.sep) >= 3:
+            dirs[:] = []
+        if 'financ' in os.path.basename(path).lower():
+            lines.append('  dir {}: {} files {}'.format(path, len(files), files[:5]))
+    return lines
+
+
 def probe(C, sectors, end_time, live, clock):
     """Call each QMT data API once and check the shapes parsed above.
     Returns log lines; raises MissingInput showing the unexpected value."""
@@ -371,8 +402,10 @@ def probe(C, sectors, end_time, live, clock):
            table, 'a one-column DataFrame indexed by date')
     qmt_date(table.index[-1])
     known = table.iloc[:, 0].dropna()
-    expect(len(known) > 0, 'get_financial_data', table,
-           'total_capital values; all are NaN, so download 财务数据 in 数据管理 first')
+    if known.empty:
+        raise MissingInput('QMT get_financial_data returned {}; expected total_capital values; all are NaN, so '
+                           'download 财务数据 in 数据管理 first. Diagnosis:\n{}'.format(
+                               short(table), '\n'.join(financial_diagnosis(C))))
     lines.append('probe total shares {}: {} on {}, {} changes (shares; 600000.SH is about 2.9e10)'.format(
         PROBE_STOCK, known.iloc[-1] if len(known) else None, known.index[-1] if len(known) else None,
         len(share_steps(known))))

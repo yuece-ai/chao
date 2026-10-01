@@ -357,8 +357,10 @@ def test_missing_financial_data_stops_at_startup():
     C = FakeContextInfo({})
     C.shares['600000.SH'] = pd.Series([float('nan')] * 3, index=['20200101', '20200102', '20200103'])
     entry.init_with(C, FakeAccount().namespace())
-    with pytest.raises(ValueError, match='all are NaN, so download'):
+    with pytest.raises(ValueError, match='all are NaN, so download') as failure:
         entry.handlebar(C)
+    # The diagnosis lists the other share sources and the local financial folders.
+    assert 'report_time' in str(failure.value) and 'TotalVolume' in str(failure.value)
 
 
 def test_mode_is_decided_at_the_first_bar(test_strategy):
