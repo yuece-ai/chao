@@ -52,7 +52,8 @@ Before running:
 1. Download the data in QMT (数据管理): daily bars for 沪深A股 and the
    indices the enabled strategies read (for strategies 1–6: `000001.SH`,
    `399001.SZ`, `399006.SZ`, `000688.SH`), ex-rights data and financial
-   data. A live run requests the incremental daily download itself each
+   data (the backtest needs the financial data's share history; live runs
+   do not). A live run requests the incremental daily download itself each
    morning; refresh ex-rights and financial data weekly by hand (QMT has no
    API for them).
 2. Paste `qmt/chao_strategy.py` into a QMT strategy.
@@ -225,7 +226,8 @@ functions, variable conventions and usage notes.
 |---|---|
 | `get_market_data_ex(fields, codes, period='1d', end_time, count, dividend_type='none', fill_data=False, subscribe=False)` | `{code: DataFrame}` indexed by `'YYYYMMDD'`; `count=-1` is every bar up to `end_time`; `subscribe=False` reads local data only, so it must be downloaded first |
 | `get_divid_factors(code)` | `{epoch ms: [每股股利, 每股红股, 每股转增, 配股, 配股价, 是否股改, 除权系数]}`, amounts per share |
-| `get_financial_data(['CAPITALSTRUCTURE.total_capital'], [code], start, end, report_type='announce_time')` | one stock over a range: DataFrame indexed by date, one column per field, in shares |
+| `get_financial_data(['CAPITALSTRUCTURE.total_capital'], [code], start, end, report_type='announce_time')` | backtest only: one stock over a range, DataFrame indexed by date, one column per field, in shares; needs 财务数据 downloaded (files in `datadir\Finance`) |
+| `get_instrument_detail(code)['TotalVolume']` | live: today's total shares for FINANCE(1), which the formulas read only on today's bar; needs no financial download |
 | `get_instrument_detail(code)` (older clients: `get_instrumentdetail`) | `InstrumentName`; `UpStopPrice`/`DownStopPrice` are today's 涨停/跌停 prices; `get_stock_name` is slated for removal and returns GBK |
 | `get_stock_list_in_sector(sector)` | list of `'600000.SH'` codes |
 | `get_full_tick(codes)` | `{code: tick}` with `timetag`, `lastPrice`, `open`, `high`, `low`, `amount`; latest tick only, unusable in backtests |

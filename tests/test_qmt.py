@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 import chao.qmt_entry as entry
 from chao.market import INDEX_SYMBOLS
-from chao.qmt_source import HISTORY_BARS, QMT_INDEX, QmtMarket, ex_rights_from_divid, from_qmt, to_qmt
+from chao.qmt_source import HISTORY_BARS, QMT_INDEX, QmtMarket, ex_rights_from_divid, probe, from_qmt, to_qmt
 from chao.settings import ConfigError
 from tests.qmt_fake import FakeAccount, FakeContextInfo, Obj, daily, ticks_from
 
@@ -43,7 +43,9 @@ def test_qmt_market_adjusts_bars_and_keeps_traded_closes():
     assert market.name('SZ000001') == 'PING AN' and market.name('SH600036') is None
     with pytest.raises(ValueError, match='no daily bars from QMT for 600036.SH'):
         market.bars('SH600036')
-    assert market.total_shares('SZ000001') == {'2019-01-01': 1e9}
+    assert market.total_shares('SZ000001') == {'1990-01-01': 1e9}  # live: today's TotalVolume
+    assert QmtMarket(C, ('A',), HISTORY_BARS, '20200102').total_shares('SZ000001') == {'2019-01-01': 1e9}
+    assert market.total_shares('SH600036') == {}  # no TotalVolume: FINANCE(1) is NaN, so no buy
 
 
 def test_gui_beats_config_beats_default(monkeypatch):
@@ -353,14 +355,22 @@ def test_daily_share_rows_collapse_to_changes():
     assert share_steps(daily) == {'2020-01-01': 1e9, '2020-01-06': 2e9}
 
 
-def test_missing_financial_data_stops_at_startup():
-    C = FakeContextInfo({})
+def test_missing_financial_data_stops_a_backtest_at_startup():
+    C = FakeContextInfo({}, backtest=True)
     C.shares['600000.SH'] = pd.Series([float('nan')] * 3, index=['20200101', '20200102', '20200103'])
     entry.init_with(C, FakeAccount().namespace())
     with pytest.raises(ValueError, match='all are NaN, so download') as failure:
         entry.handlebar(C)
     # The diagnosis lists the other share sources and the local financial folders.
     assert 'report_time' in str(failure.value) and 'TotalVolume' in str(failure.value)
+
+
+def test_live_needs_no_financial_data():
+    C = FakeContextInfo({})
+    C.shares['600000.SH'] = pd.Series([float('nan'), 3e10], index=['20200101', '20200102'])
+    C.get_financial_data = None  # never called live
+    lines = probe(C, (), '', True, '2021-02-23 14:00:00')
+    assert any("'TotalVolume': 30000000000.0" in line for line in lines)
 
 
 def test_mode_is_decided_at_the_first_bar(test_strategy):
