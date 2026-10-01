@@ -35,20 +35,17 @@ nix develop --command python scripts/bundle_qmt.py --config qmt.json   # writes 
 
 Rebuild after changing `qmt.json`; never edit the generated file.
 
-Two ready-to-paste builds are committed, so nothing has to be edited in the
-client:
-- `qmt/chao_backtest.py`, from `qmt/backtest.json`: `mode` backtest,
-  account `testS`, trade lists in `D:\chao\report`;
-- `qmt/chao_live.py`, from `qmt/live.json`: `mode` live, the account QMT
-  injects, ledger in `D:\chao\ledger.json`, `dry_run` on.
-
-A test keeps both identical to a fresh build. After changing the sources,
-rebuild them:
+The ready-to-paste build is committed as `qmt/chao_strategy.py`, built from
+`qmt/strategy.json`. Nothing is edited in the client: the run mode follows
+the button pressed (回测 or 运行, read from `C.do_back_test` at the first
+bar), the account is the one selected in QMT (falling back to `testS` for
+backtests), the backtest range comes from QMT's backtest settings, trade
+lists go to `D:\chao\report` and the ledger to `D:\chao\ledger.json`, with
+`dry_run` on. A test keeps it identical to a fresh build. After changing
+the sources, rebuild it:
 
 ```sh
-for m in backtest live; do
-  nix develop --command python scripts/bundle_qmt.py --config qmt/$m.json --out qmt/chao_$m.py
-done
+nix develop --command python scripts/bundle_qmt.py --config qmt/strategy.json --out qmt/chao_strategy.py
 ```
 
 Before running:
@@ -56,7 +53,7 @@ Before running:
    indices the enabled strategies read (for strategies 1–6: `000001.SH`,
    `399001.SZ`, `399006.SZ`, `000688.SH`), ex-rights data and financial
    data. Keep the daily data current; live runs add only today's bar.
-2. Paste `qmt/chao_backtest.py` (backtest) or `qmt/chao_live.py` (live) into a QMT strategy.
+2. Paste `qmt/chao_strategy.py` into a QMT strategy.
 3. Set the main chart to daily (1d); the strategy refuses other periods.
 
 Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
@@ -296,7 +293,7 @@ Run these in order; each step's log is the evidence for the next.
    - In 数据管理, download daily bars for 沪深A股 and the four indices
      from 2008 on (a backtest wants about 400 days before its start), plus
      ex-rights and financial data.
-2. **Startup.** Paste `qmt/chao_backtest.py` into a QMT strategy and run it
+2. **Startup.** Paste `qmt/chao_strategy.py` into a QMT strategy and run it
    on a daily 000001.SH chart. The first log lines show:
    - the Python, pandas and numpy versions;
    - one `probe` line per QMT data API, with its type and a sample;
