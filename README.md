@@ -6,6 +6,8 @@
 
 最终目标是接入 QMT：7 个策略共用一个资金账户，信号出现后按统一的交易协调规则自动执行。当前阶段的首要验收目标仍是历史回放正确性，不能把未完成的历史对账直接用于自动下单。
 
+QMT: [docs/qmt.md](docs/qmt.md)
+
 ## 数据与参数
 
 - 原始日线：`/home/fikgol/data/tdx/cryptd-workspace/data/tdx/raw/vipdoc`

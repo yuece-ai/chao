@@ -74,10 +74,10 @@ def evaluate(node, env):
             raise ValueError('Unsupported formula call')
         return env[node.func.id](*(evaluate(x,env) for x in node.args))
     if isinstance(node, ast.BoolOp):
-        values = [evaluate(x,env) for x in node.values]
-        result = values[0]
-        for value in values[1:]:
-            result = result & value if isinstance(node.op,ast.And) else result | value
+        operands = [evaluate(x,env) for x in node.values]
+        result = operands[0]
+        for operand in operands[1:]:
+            result = result & operand if isinstance(node.op,ast.And) else result | operand
         return result
     if isinstance(node, ast.BinOp):
         a,b=evaluate(node.left,env),evaluate(node.right,env)
