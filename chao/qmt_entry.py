@@ -421,7 +421,7 @@ def init(C):
     init_with(C, globals())
 
 
-REQUIRED_CALLS = ['get_market_data_ex', 'get_divid_factors', 'get_financial_data', 'get_stock_list_in_sector',
+REQUIRED_CALLS = ['get_market_data_ex', 'get_divid_factors', 'get_stock_list_in_sector',
                   'get_bar_timetag', 'get_full_tick', 'is_last_bar']
 
 

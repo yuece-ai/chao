@@ -43,8 +43,7 @@ def test_qmt_market_adjusts_bars_and_keeps_traded_closes():
     assert market.name('SZ000001') == 'PING AN' and market.name('SH600036') is None
     with pytest.raises(ValueError, match='no daily bars from QMT for 600036.SH'):
         market.bars('SH600036')
-    assert market.total_shares('SZ000001') == {'1990-01-01': 1e9}  # live: today's TotalVolume
-    assert QmtMarket(C, ('A',), HISTORY_BARS, '20200102').total_shares('SZ000001') == {'2019-01-01': 1e9}
+    assert market.total_shares('SZ000001') == {'1990-01-01': 1e9}  # today's TotalVolume
     assert market.total_shares('SH600036') == {}  # no TotalVolume: FINANCE(1) is NaN, so no buy
 
 
@@ -349,30 +348,13 @@ def test_price_margin_must_stay_inside_the_price_cage():
         entry.build_run(FakeContextInfo({}), FakeAccount().namespace(price_margin=0.03))
 
 
-def test_daily_share_rows_collapse_to_changes():
-    from chao.qmt_source import share_steps
-    daily = pd.Series([1e9, 1e9, 1e9, 2e9, 2e9], index=['20200101', '20200102', '20200103', '20200106', '20200107'])
-    assert share_steps(daily) == {'2020-01-01': 1e9, '2020-01-06': 2e9}
-
-
-def test_missing_financial_data_stops_a_backtest_at_startup():
+def test_total_shares_come_from_the_contract_details():
     C = FakeContextInfo({}, backtest=True)
-    C.shares['600000.SH'] = pd.Series([float('nan')] * 3, index=['20200101', '20200102', '20200103'])
-    entry.init_with(C, FakeAccount().namespace(account_id='A1'))
-    with pytest.raises(ValueError, match='all are NaN, so download') as failure:
-        entry.handlebar(C)
-    # The diagnosis lists the other share sources and the local financial folders.
-    assert 'report_time' in str(failure.value) and 'TotalVolume' in str(failure.value)
-
-
-def test_live_needs_no_financial_data():
-    C = FakeContextInfo({})
     C.shares['600000.SH'] = pd.Series([float('nan'), 3e10], index=['20200101', '20200102'])
-    C.get_financial_data = None  # never called live
-    probe(C, (), '', True, '2021-02-23 14:00:00')  # no get_financial_data call, no error
+    probe(C, (), '20200102', False, '2021-02-23 14:00:00')  # the fake has no get_financial_data
     C.shares['600000.SH'] = pd.Series([float('nan')], index=['20200101'])
     with pytest.raises(ValueError, match='TotalVolume, the total shares FINANCE'):
-        probe(C, (), '', True, '2021-02-23 14:00:00')
+        probe(C, (), '20200102', False, '2021-02-23 14:00:00')
 
 
 def test_mode_is_decided_at_the_first_bar(test_strategy):
@@ -397,9 +379,3 @@ def test_mode_can_be_forced(test_strategy):
         entry.handlebar(C)
     assert entry.RUN.backtest and C.capital == entry.BACKTEST_CAPITAL
 
-
-def test_folder_summary_counts_files_in_subfolders(tmp_path):
-    from chao.qmt_source import folder_summary
-    (tmp_path / 'SH').mkdir()
-    (tmp_path / 'SH' / '600000.dat').write_bytes(b'xx')
-    assert folder_summary(str(tmp_path)).startswith("1 files, subfolders ['SH'], newest ['SH")
