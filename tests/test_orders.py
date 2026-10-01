@@ -1,4 +1,4 @@
-from chao.orders import Book, Holding, Order, lot_volume, plan_orders
+from chao.orders import Book, Holding, Order, limit_price, lot_volume, plan_orders
 
 
 def book(cash=100000.0, total=100000.0, holdings=None, owned=(), ordered=()):
@@ -44,3 +44,11 @@ def test_priority_resolves_conflicts():
 def test_symbols_ordered_today_are_not_bought_again():
     b = book(ordered={'SZ000001'})
     assert plan_orders([(1, 'SZ000001', 'buy')], b, {'SZ000001': 10.0}, 10, (1,)) == []
+
+
+def test_limit_price_crosses_by_the_margin_within_the_daily_limits():
+    assert limit_price('buy', 10.0, 0.015) == 10.15
+    assert limit_price('sell', 10.0, 0.015) == 9.85
+    assert limit_price('buy', 10.0, 0.015, down=9.0, up=10.1) == 10.1    # capped at 涨停
+    assert limit_price('sell', 10.0, 0.015, down=9.9, up=11.0) == 9.9    # floored at 跌停
+    assert limit_price('buy', 3.33, 0.015) == 3.38                       # 3.37995 -> 3.38

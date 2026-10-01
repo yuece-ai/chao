@@ -143,23 +143,26 @@ def arithmetic(op, a, b):
 
 
 def values_of(x):
-    return x.values if isinstance(x, pd.Series) else x
+    return x.values if isinstance(x, (pd.Series, pd.DataFrame)) else x
 
 
-def bind(frame, indices, indexc, name, shares):
-    """Formula names that read market data for one stock."""
-    def index(code): return indices[code].reindex(frame.index)
+def reads(strategy):
+    """Names a strategy's formulas refer to (e.g. NAMELIKE, FINANCE)."""
+    return {n.id for _, node in strategy.program for n in ast.walk(node) if isinstance(n, ast.Name)}
+
+
+def bind(close, high, low, amo, indexc, index_of, names, shares):
+    """Formula names over a panel: one column per stock, rows are each stock's
+    own bars. names holds a name or None per stock; shares is a panel with NaN
+    where the share capital is unknown. A stock without a name never passes
+    the ST exclusion; callers report it (see reads())."""
     def finance(field):
         if field != 1: raise ValueError('Unknown FINANCE field {}'.format(field))
-        if shares is None: raise MissingInput('FINANCE(1) needs a share-capital series')
         return shares
     def namelike(prefix):
-        # Without a name the ST exclusion cannot be decided.
-        if not name: raise MissingInput('NAMELIKE needs the stock name')
-        return int(name.startswith(prefix))
-    return dict(FINANCE=finance, INDEX=index, NAMELIKE=namelike,
-                CLOSE=frame.close, HIGH=frame.high, LOW=frame.low, AMO=frame.amount,
-                INDEXC=indexc.reindex(frame.index))
+        return np.array([float(n.startswith(prefix)) if n else np.nan for n in names])
+    return dict(FINANCE=finance, INDEX=index_of, NAMELIKE=namelike,
+                CLOSE=close, HIGH=high, LOW=low, AMO=amo, INDEXC=indexc)
 
 
 def formula_environment(strategy, bound, memo=None):
@@ -170,8 +173,12 @@ def formula_environment(strategy, bound, memo=None):
     return env
 
 
-def signals(strategy, bound, index, memo=None):
-    """Buy/sell signals of one strategy over bars bound by bind()."""
+def signals(strategy, bound, shape, memo=None):
+    """(buy, sell) boolean arrays of the given (bars, stocks) shape."""
     env = formula_environment(strategy, bound, memo)
-    frame = pd.DataFrame({'buy': values_of(env[BUY_KEY]), 'sell': values_of(env[SELL_KEY])}, index=index)
-    return frame.fillna(False).astype(bool)
+    def flags(key):
+        value = np.asarray(values_of(env[key]))
+        if value.dtype != bool:
+            raise ValueError('{} of strategy {} must be a condition'.format(key, strategy.id))
+        return np.broadcast_to(value, shape)
+    return flags(BUY_KEY), flags(SELL_KEY)

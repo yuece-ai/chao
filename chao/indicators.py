@@ -3,13 +3,18 @@
 Each indicator takes pandas Series and integer periods and returns a Series
 on the same index. Formulas can only call indicators registered in
 INDICATORS; add new ones here without touching the formula engine.
-Plain arrays (results of formula arithmetic) are accepted as positional series.
+Inputs are positional: one stock as a Series, or a panel of stocks as a
+DataFrame with one column per stock (rows are each stock's own bars, so
+rolling windows never mix stocks). Plain arrays from formula arithmetic are
+accepted too.
 """
 import pandas as pd
 
 
 def series(x):
-    return x if isinstance(x, pd.Series) else pd.Series(x)
+    if isinstance(x, (pd.Series, pd.DataFrame)):
+        return x
+    return pd.Series(x) if x.ndim == 1 else pd.DataFrame(x)
 
 
 def MA(x, n):

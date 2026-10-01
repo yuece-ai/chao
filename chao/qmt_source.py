@@ -53,23 +53,22 @@ def per_ten(value):
     return three_decimals(float(value) * 10)
 
 
-def ex_rights_from_divid(factors, as_of):
-    """QMT get_divid_factors -> chao.qfq.ExRights, oldest first.
-
-    Expected per QMT docs: {date: [interest, stockBonus, stockGift, allotNum,
-    allotPrice, gugai, dr]} with the date as 'YYYYMMDD' or epoch milliseconds.
-    """
+def divid_events(factors):
+    """QMT get_divid_factors -> every chao.qfq.ExRights, oldest first."""
     events = []
     for key, row in factors.items():
         if len(row) != len(DIVID_COLUMNS):
             raise MissingInput('unexpected get_divid_factors row {!r}'.format(row))
         values = dict(zip(DIVID_COLUMNS, row))
-        date = qmt_date(key)
-        if date <= pd.Timestamp(as_of):
-            events.append(ExRights(date, per_ten(values['interest']), three_decimals(values['allotPrice']),
-                                   per_ten(values['stockBonus']) + per_ten(values['stockGift']),
-                                   per_ten(values['allotNum'])))
+        events.append(ExRights(qmt_date(key), per_ten(values['interest']), three_decimals(values['allotPrice']),
+                               per_ten(values['stockBonus']) + per_ten(values['stockGift']),
+                               per_ten(values['allotNum'])))
     return sorted(events, key=lambda e: e.date)
+
+
+def ex_rights_from_divid(factors, as_of):
+    """Ex-rights events on or before as_of (GBBQ-style snapshot)."""
+    return [e for e in divid_events(factors) if e.date <= pd.Timestamp(as_of)]
 
 
 def qmt_date(value):
@@ -100,18 +99,17 @@ def tick_date(tick):
     return qmt_date(stamp) if stamp else None
 
 
-def with_ticks(frames, ticks, today):
-    """Frames with today's bar set from get_full_tick, for codes whose tick
-    is from today and has traded; other frames are left as they are."""
-    day = pd.Timestamp(today)
-    result = dict(frames)
-    for code, tick in (ticks or {}).items():
-        if not tick or float(tick.get('lastPrice') or 0) <= 0 or tick_date(tick) != day:
-            continue
-        row = pd.DataFrame({k: [float(tick[v])] for k, v in TICK_FIELDS.items()}, index=[day])
-        frame = result.get(code)
-        result[code] = row if frame is None else pd.concat([frame[frame.index < day], row])[BAR_FIELDS]
-    return result
+def with_tick(frame, tick, day):
+    """frame with today's bar set from a get_full_tick tick, if the tick is
+    from today and has traded; otherwise frame unchanged (None stays None)."""
+    if not tick or float(tick.get('lastPrice') or 0) <= 0 or tick_date(tick) != day:
+        return frame
+    row = np.array([[float(tick[TICK_FIELDS[k]]) for k in BAR_FIELDS]])
+    if frame is None:
+        return pd.DataFrame(row, index=pd.DatetimeIndex([day]), columns=BAR_FIELDS)
+    keep = frame.index < day
+    return pd.DataFrame(np.vstack([frame[BAR_FIELDS].values[keep], row]),
+                        index=frame.index[keep].append(pd.DatetimeIndex([day])), columns=BAR_FIELDS)
 
 
 class QmtMarket(MarketData):
@@ -121,11 +119,35 @@ class QmtMarket(MarketData):
         self.history_bars = history_bars
         self.end_time = end_time       # 'YYYYMMDD' in a backtest, '' live
         self.reset_static()
-        self._raw = {}
+        self._raw, self._ticks, self._day = {}, {}, None
         self._index_closes = None
 
     def reset_static(self):
-        self._events, self._shares, self._names = {}, {}, {}
+        self._events, self._shares, self._details = {}, {}, {}
+
+    def detail(self, symbol):
+        """Contract details: name and today's price limits. Current clients
+        call it get_instrument_detail; older ones get_instrumentdetail."""
+        if symbol not in self._details:
+            read = getattr(self.C, 'get_instrument_detail', None) or self.C.get_instrumentdetail
+            self._details[symbol] = read(to_qmt(symbol)) or {}
+        return self._details[symbol]
+
+    def price_limits(self, symbol):
+        """(跌停价, 涨停价) for today, or (None, None) when unknown."""
+        d = self.detail(symbol)
+        return d.get('DownStopPrice') or None, d.get('UpStopPrice') or None
+
+    def latest_prices(self, symbols, today):
+        """{symbol: last price} from get_full_tick, for stocks traded today."""
+        day = pd.Timestamp(today)
+        ticks = self.C.get_full_tick([to_qmt(s) for s in symbols]) or {}
+        prices = {}
+        for s in symbols:
+            tick = ticks.get(to_qmt(s))
+            if tick and float(tick.get('lastPrice') or 0) > 0 and tick_date(tick) == day:
+                prices[s] = float(tick['lastPrice'])
+        return prices
 
     def _fetch(self, qmt_codes):
         data = self.C.get_market_data_ex(BAR_FIELDS, qmt_codes, period='1d', end_time=self.end_time,
@@ -148,12 +170,15 @@ class QmtMarket(MarketData):
         qmt_index = {code: QMT_INDEX[code] for code in sorted(index_codes)}
         codes = [to_qmt(s) for s in symbols] + list(qmt_index.values())
         frames = self._fetch(codes)
-        if today is not None:
-            frames = with_ticks(frames, self.C.get_full_tick(codes), today)
-        missing = [c for c in qmt_index.values() if c not in frames]
+        self._day = None if today is None else pd.Timestamp(today)
+        self._ticks = {} if today is None else (self.C.get_full_tick(codes) or {})
+        for c in qmt_index.values():
+            frames[c] = with_tick(frames.get(c), self._ticks.get(c), self._day)
+        missing = [c for c in qmt_index.values() if frames[c] is None]
         if missing:
             raise MissingInput('no daily bars from QMT for indices {}; download them first'.format(missing))
-        self._raw = {from_qmt(c): f for c, f in frames.items() if c not in qmt_index.values()}
+        # Stocks get today's tick when first used (see raw_bars).
+        self._raw = {from_qmt(c): frames.get(c) for c in codes if c not in qmt_index.values()}
         self._index_closes = {code: frames[c]['close'] for code, c in qmt_index.items()}
 
     def universe(self):
@@ -163,34 +188,43 @@ class QmtMarket(MarketData):
         return sorted(from_qmt(code) for code in codes)
 
     def last_bar_date(self, symbol):
-        raw = self._raw.get(symbol)
-        return None if raw is None or raw.empty else raw.index[-1]
+        try:
+            return self.raw_bars(symbol).index[-1]
+        except MissingInput:
+            return None
 
     def raw_bars(self, symbol):
-        if symbol not in self._raw:
-            raise MissingInput('no daily bars from QMT for {}'.format(to_qmt(symbol)))
-        return self._raw[symbol]
+        code = to_qmt(symbol)
+        if code in self._ticks:
+            self._raw[symbol] = with_tick(self._raw.get(symbol), self._ticks.pop(code), self._day)
+        raw = self._raw.get(symbol)
+        if raw is None or raw.empty:
+            raise MissingInput('no daily bars from QMT for {}'.format(code))
+        return raw
 
     def load_static(self, symbol):
         """Read and cache the per-stock data that does not change intraday."""
         if symbol not in self._events:
-            self._events[symbol] = self.C.get_divid_factors(to_qmt(symbol)) or {}
-        self.name(symbol)
+            self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
+        self.detail(symbol)
         self.total_shares(symbol)
 
     def bars(self, symbol):
         raw = self.raw_bars(symbol)
         if symbol not in self._events:
-            self._events[symbol] = self.C.get_divid_factors(to_qmt(symbol)) or {}
-        events = ex_rights_from_divid(self._events[symbol], raw.index[-1])
+            self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
+        events = [e for e in self._events[symbol] if e.date <= raw.index[-1]]
         adjusted = forward_adjust(raw, events)
         adjusted['amount'] = raw['amount']
         return adjusted
 
     def unadjusted_close(self, symbol, date):
         """Traded (unadjusted) close used to size orders; None if unknown."""
-        raw = self._raw.get(symbol)
-        close = None if raw is None else raw['close'].get(pd.Timestamp(date))
+        try:
+            raw = self.raw_bars(symbol)
+        except MissingInput:
+            return None
+        close = raw['close'].get(pd.Timestamp(date))
         return None if close is None or close != close else float(close)
 
     def index_closes(self):
@@ -199,10 +233,7 @@ class QmtMarket(MarketData):
         return self._index_closes
 
     def name(self, symbol):
-        if symbol not in self._names:
-            detail = self.C.get_instrumentdetail(to_qmt(symbol)) or {}
-            self._names[symbol] = name_text(detail.get('InstrumentName', '')) or None
-        return self._names[symbol]
+        return name_text(self.detail(symbol).get('InstrumentName', '')) or None
 
     def total_shares(self, symbol):
         """Total-share history: one stock over a date range is a DataFrame

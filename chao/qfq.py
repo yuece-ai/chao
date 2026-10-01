@@ -77,15 +77,15 @@ def _round_cents(cents, a, b):
 
 def forward_adjust(raw, events):
     """Return raw OHLC bars forward-adjusted by events (see module doc)."""
-    out = raw[list(PRICE_COLUMNS)].copy()
-    cents = {k: np.rint(raw[k].values * 100).astype(np.int64) for k in PRICE_COLUMNS}
+    out = {k: raw[k].values.astype(float) for k in PRICE_COLUMNS}
+    cents = {k: np.rint(out[k] * 100).astype(np.int64) for k in PRICE_COLUMNS}
     a, b = Fraction(1), Fraction(0)
     right = len(raw)
     for event in reversed(events):
         left = int(raw.index.searchsorted(event.date, side='left'))
         if left < right and (a, b) != (1, 0):
             for k in PRICE_COLUMNS:
-                out.iloc[left:right, out.columns.get_loc(k)] = _round_cents(cents[k][left:right], a, b) / 100
+                out[k][left:right] = _round_cents(cents[k][left:right], a, b) / 100
         right = min(right, left)
         scale = 1 + (event.bonus + event.rights) / 10
         shift = event.cash / 10 - event.rights_price * event.rights / 10
@@ -93,5 +93,5 @@ def forward_adjust(raw, events):
         a, b = a / scale, b - a * shift / scale
     if right and (a, b) != (1, 0):
         for k in PRICE_COLUMNS:
-            out.iloc[:right, out.columns.get_loc(k)] = _round_cents(cents[k][:right], a, b) / 100
-    return out
+            out[k][:right] = _round_cents(cents[k][:right], a, b) / 100
+    return pd.DataFrame(out, index=raw.index, columns=list(PRICE_COLUMNS))

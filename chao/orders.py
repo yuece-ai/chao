@@ -15,6 +15,7 @@ Rules:
 - Quantities are whole lots of 100 shares; STAR market (SH688/689) orders
   need at least 200 shares.
 """
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Dict, List, NamedTuple, Set
 
 LOT = 100
@@ -40,6 +41,18 @@ class Order(NamedTuple):
     symbol: str
     volume: int
     strategy: int
+
+
+def limit_price(side, last, margin, down=None, up=None):
+    """Limit price `margin` through the last price (above for a buy, below for
+    a sell), in cents and within the day's price limits when known."""
+    target = last * (1 + margin) if side == 'buy' else last * (1 - margin)
+    price = float(Decimal(repr(target)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
+    if side == 'buy' and up:
+        price = min(price, float(up))
+    if side == 'sell' and down:
+        price = max(price, float(down))
+    return price
 
 
 def lot_volume(symbol, value, price):

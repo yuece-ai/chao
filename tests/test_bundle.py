@@ -16,7 +16,7 @@ def run_strategy(module):
     C = FakeContextInfo(bars, names={'000001.SZ': 'X'}, sectors={'沪深A股': ['000001.SZ']})
     account = FakeAccount(cash=100000.0)
     saved = dict(module.CONFIG)
-    module.CONFIG.update(trade_time='00:00', account_id='A1')
+    module.CONFIG.update(signal_time='00:00', order_time='00:00', account_id='A1')
     module.passorder, module.get_trade_detail_data = account.passorder, account.get_trade_detail_data
     try:
         with redirect_stdout(io.StringIO()) as out:

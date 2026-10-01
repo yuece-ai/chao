@@ -6,6 +6,7 @@ Strategy code only receives a MarketData and plain pandas data from it.
 """
 from abc import ABC, abstractmethod
 from typing import Any, Dict, NamedTuple
+import numpy as np
 import pandas as pd
 
 
@@ -76,5 +77,9 @@ def share_series(steps, index):
     """FINANCE(1) on each bar from share-capital steps, or None."""
     if not steps:
         return None
-    series = pd.Series({pd.Timestamp(d): float(v) for d, v in steps.items()}).sort_index()
-    return series.reindex(index, method='ffill').fillna(0.0)
+    days = sorted(steps)
+    step_dates = np.array(days, dtype='datetime64[ns]')
+    values = np.array([float(steps[d]) for d in days])
+    # Last step on or before each bar; bars before the first step get 0.
+    pos = np.searchsorted(step_dates, np.asarray(index.values, dtype='datetime64[ns]'), side='right') - 1
+    return pd.Series(np.where(pos >= 0, values[np.maximum(pos, 0)], 0.0), index=index)

@@ -11,7 +11,8 @@ from chao.qmt_source import to_qmt
 
 STOCK_BUY, STOCK_SELL = 23, 24
 BY_SHARES = 1101      # volume is a share count
-LATEST_PRICE = 5      # fill at the latest price; the bar close in a backtest
+LATEST_PRICE = 5      # backtest: fill at the bar close
+LIMIT_PRICE = 11      # live: a specified limit price
 STRATEGY_NAME = 'chao'
 # quickTrade 2 sends the order on the bar that produced the signal, also on
 # historical bars in a backtest; 0 would wait for the next bar.
@@ -44,9 +45,12 @@ def read_book(api, account_id, owned, live):
                 set(owned) & held, ordered)
 
 
-def place(api, C, account_id, order):
+def place(api, C, account_id, order, price=None):
+    """Send an order: at a limit price when given (live), else at the latest
+    price (backtest, where that is the bar close)."""
     op = STOCK_BUY if order.side == 'buy' else STOCK_SELL
-    api.passorder(op, BY_SHARES, account_id, to_qmt(order.symbol), LATEST_PRICE, -1, order.volume,
+    pr_type, value = (LATEST_PRICE, -1) if price is None else (LIMIT_PRICE, price)
+    api.passorder(op, BY_SHARES, account_id, to_qmt(order.symbol), pr_type, value, order.volume,
                   STRATEGY_NAME, QUICK, 'chao-s{}'.format(order.strategy), C)
 
 

@@ -44,11 +44,20 @@ Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
   quickTrade 2, so they fill on the signal bar, and QMT simulates them. Fees
   and slippage come from QMT's backtest settings. If QMT's bars end before
   `C.end`, the run stops and asks for the history to be downloaded.
-- **Live:** only on the last bar. On the first tick of each day, the
-  universe and the per-stock static data (ex-rights, total shares, names)
-  are read. Once a day at or after `trade_time`, the signals are computed
-  and the orders are sent, or only printed while `dry_run` is on (the
-  default).
+- **Live:** only on the last bar, in three steps a day:
+  1. On the first tick, read the universe and the per-stock static data
+     (ex-rights, total shares, contract details with today's price limits).
+  2. At `signal_time` (14:56:00), compute today's signals; this takes
+     about 25 s.
+  3. At the first tick at or after `order_time` (14:56:45):
+     - read the account and one batch of latest ticks;
+     - send limit orders `price_margin` (1.5%) through the last price:
+       buys above it, sells below it, in cents and within today's 涨停/跌停
+       prices;
+     - size buys at their limit price, which is the cash the broker
+       freezes.
+
+     While `dry_run` is on (the default), orders are only printed.
   - `get_market_data_ex(subscribe=False)` reads local data, which ends
     yesterday during the session. Today's bar therefore comes from one
     `get_full_tick` call per batch: open, high, low, `lastPrice` as the
@@ -104,7 +113,9 @@ holds numbers only, so lists and text belong in `CONFIG`.
 | `account_id` | the QMT account | required in backtests and for live orders |
 | `dry_run` | `1` | live only: print orders instead of sending them |
 | `max_positions` | `10` | most chao stocks held at once |
-| `trade_time` | `14:50` | live only: earliest time of day to trade |
+| `signal_time` | `14:56:00` | live only: when to compute the day's signals |
+| `order_time` | `14:56:45` | live only: when to send the orders |
+| `price_margin` | `0.015` | live only: limit price this far through the last price |
 | `ledger_path` | (empty) | required for live orders: JSON file of chao's symbols |
 
 ## QMT API use, checked against the official docs
@@ -117,12 +128,12 @@ functions, variable conventions and usage notes.
 | `get_market_data_ex(fields, codes, period='1d', end_time, count, dividend_type='none', fill_data=False, subscribe=False)` | `{code: DataFrame}` indexed by `'YYYYMMDD'`; `count=-1` is every bar up to `end_time`; `subscribe=False` reads local data only, so it must be downloaded first |
 | `get_divid_factors(code)` | `{epoch ms: [每股股利, 每股红股, 每股转增, 配股, 配股价, 是否股改, 除权系数]}`, amounts per share |
 | `get_financial_data(['CAPITALSTRUCTURE.total_capital'], [code], start, end, report_type='announce_time')` | one stock over a range: DataFrame indexed by date, one column per field, in shares |
-| `get_instrumentdetail(code)['InstrumentName']` | stock name; `get_stock_name` is slated for removal and returns GBK |
+| `get_instrument_detail(code)` (older clients: `get_instrumentdetail`) | `InstrumentName`; `UpStopPrice`/`DownStopPrice` are today's 涨停/跌停 prices; `get_stock_name` is slated for removal and returns GBK |
 | `get_stock_list_in_sector(sector)` | list of `'600000.SH'` codes |
 | `get_full_tick(codes)` | `{code: tick}` with `timetag`, `lastPrice`, `open`, `high`, `low`, `amount`; latest tick only, unusable in backtests |
 | `get_bar_timetag(barpos)`, `barpos`, `period`, `do_back_test`, `start`, `end`, `is_last_bar()` | bar time in epoch ms; read-only run attributes |
 | `get_trade_detail_data(account, 'STOCK', 'ACCOUNT'/'POSITION'/'ORDER', strategy)` | `m_dAvailable`, `m_dBalance`; `m_strExchangeID`, `m_strInstrumentID`, `m_nVolume`, `m_nCanUseVolume` |
-| `passorder(23/24, 1101, account, code, 5, -1, volume, 'chao', 2, remark, C)` | buy/sell by shares at the latest price; quickTrade 2 sends on the current bar, also on historical bars |
+| `passorder(23/24, 1101, account, code, 11, price, volume, 'chao', 2, remark, C)` | live: buy/sell by shares at a limit price; backtest uses prType 5 (latest price = bar close) with price -1; quickTrade 2 sends on the current bar, also on historical bars |
 
 Still to see in the client:
 - the actual call latency;
@@ -139,27 +150,45 @@ so QMT's own call latency is not included. The universe is about 5,100
 | Phase | Cost per stock | Whole universe | QMT calls |
 |---|---|---|---|
 | Live, first tick of the day: static data | 0.4 ms + 3 calls | ~2 s + call latency | ~15,000 |
-| Live, at trade_time: 400 bars plus today's tick, 6 strategies | 14.5 ms | ~75 s + batch reads | 26 batched bar reads + 26 tick reads + 2–3 account reads |
-| Backtest preparation: full history, 6 strategies | 31 ms | ~160 s + reads | 26 batched bar reads + 15,000 static reads |
-| Backtest, per bar | — | under 1 ms + 2–3 account reads | 2–3 |
+| Live, signal_time: 400 bars plus today's tick, 6 strategies | 4.7 ms | ~24 s + batch reads | 26 bar reads + 26 tick reads |
+| Live, order_time: plan and send | — | under 1 s | 2–3 account reads + 1 tick read + one passorder per order |
+| Backtest preparation: full history, 6 strategies | 12.6 ms | ~64 s + reads | 204 bar reads (batches of 25) + 15,000 static reads |
+| Backtest, per bar | — | under 1 ms | 2–3 account reads |
+
+Every phase is linear in stocks × bars.
+
+How the original ~132 ms per stock came down to 4.7 ms:
+- **Panel evaluation.** A batch of 200 stocks is one panel: one column per
+  stock, rows aligned on each stock's own bars, never on dates. Each
+  indicator runs once per panel instead of once per stock.
+  - Rolling results are bit-identical to per-stock evaluation (checked for
+    300 stocks, windows 20–250, mean/max/min).
+  - Signals are identical for all 17,381 strategy-stock pairs of the
+    reference stocks.
+- **Shared work:** formulas are parsed once; data-only indicator calls are
+  shared across strategies; comparisons and arithmetic run on numpy
+  arrays.
+- **Per-stock data:** qfq uses numpy plus a float fast path (identical to
+  the exact algorithm on all 6,157 stocks); ex-rights are converted once a
+  day; index alignment and share capital use `searchsorted`.
+
+Why 400 bars live: the last 100 bars of a 400-bar window reproduce the
+full-history signals exactly (1.74 million bars, 0 differences). A 300-bar
+window differs in 8 places, because pandas' rolling sums carry rounding
+from earlier bars.
 
 Memory:
+- live keeps one 200-stock batch of 400-bar frames;
 - a backtest keeps sell tables of about 12 KB per stock for a 3.7-year
-  window (about 60 MB in all), plus one batch of raw bars (about 50 MB);
-- a live day keeps one batch of 400-bar frames.
-
-Every phase is linear in stocks × bars. Since the formula optimisations
-(formulas parsed once, data-only indicator calls shared across strategies
-for each stock, comparisons and arithmetic on numpy arrays, a float fast
-path for qfq rounding), one stock costs about 1/12 of the original time.
-The TDX parity replay output is byte-identical.
+  window, plus one 25-stock batch.
 
 Is this acceptable?
-- **Live:** about 1.5–2 minutes from 14:50, leaving time before the 14:57
-  closing call. QMT runs every strategy on one thread, so other strategies
-  wait during that time. If the client's calls turn out slow, move
-  `trade_time` earlier.
-- **Backtest:** a few minutes of one-time preparation, then fast bars.
+- **Live:** the heavy step takes about 25 s from 14:56:00 plus QMT's read
+  time, inside the 45 s before the 14:56:45 orders. QMT runs every
+  strategy on one thread, so other strategies wait during that time. If
+  the client's reads are slow, move `signal_time` earlier: orders still go
+  out at `order_time`, or at once if the signals finish later than that.
+- **Backtest:** about a minute of one-time preparation, then fast bars.
 
 Known differences from the TDX parity replay:
 - At 14:50, today's close and AMO (turnover) are intraday values. AMO is

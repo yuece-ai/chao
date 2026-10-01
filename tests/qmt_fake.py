@@ -5,7 +5,7 @@ import pandas as pd
 class FakeContextInfo:
     def __init__(self, bars, divid=None, names=None, shares=None, sectors=None, last_bar=True,
                  backtest=False, bar_dates=('20210223',), start='2020-01-01 00:00:00',
-                 end='2021-02-23 15:00:00', ticks=None):
+                 end='2021-02-23 15:00:00', ticks=None, limits=None):
         self.bars = bars            # {qmt code: DataFrame indexed by 'YYYYMMDD'}
         self.divid = divid or {}    # {qmt code: {'YYYYMMDD': [7 per-share values]}}
         self.names = names or {}
@@ -16,6 +16,7 @@ class FakeContextInfo:
         self.period = '1d'
         self.start, self.end = start, end
         self.ticks = ticks or {}          # {qmt code: get_full_tick dict}
+        self.limits = limits or {}        # {qmt code: (跌停价, 涨停价)}
         self.calls = []                   # (function, number of codes) per data call
         self.bar_dates = list(bar_dates)  # one 'YYYYMMDD' per bar position
         self.barpos = len(self.bar_dates) - 1
@@ -39,8 +40,10 @@ class FakeContextInfo:
     def get_divid_factors(self, code):
         return self.divid.get(code, {})
 
-    def get_instrumentdetail(self, code):
-        return {'InstrumentID': code[:6], 'InstrumentName': self.names.get(code, '')}
+    def get_instrument_detail(self, code):
+        down, up = self.limits.get(code, (None, None))
+        return {'InstrumentID': code[:6], 'InstrumentName': self.names.get(code, ''),
+                'DownStopPrice': down, 'UpStopPrice': up}
 
     def get_financial_data(self, fields, codes, start, end, report_type):
         # One stock over a date range: DataFrame indexed by date, one column per field.
@@ -73,17 +76,28 @@ class FakeAccount:
         assert account_type == 'STOCK'
         if kind == 'ORDER':
             return [Obj(m_strExchangeID=o[3][-2:], m_strInstrumentID=o[3][:6])
-                    for o in self.orders if o[6] == strategy_name]
+                    for o in self.orders if o[7] == strategy_name]
         if kind == 'ACCOUNT':
             return [Obj(m_dAvailable=self.cash, m_dBalance=self.cash + sum(p.value for p in self.positions))]
         return [Obj(m_strExchangeID=p.symbol[:2], m_strInstrumentID=p.symbol[2:], m_nVolume=p.volume,
                     m_nCanUseVolume=p.sellable) for p in self.positions]
 
     def passorder(self, op, order_type, account_id, code, pr_type, price, volume, name, quick, remark, C):
-        self.orders.append((op, order_type, account_id, code, pr_type, volume, name, quick, remark))
+        self.orders.append((op, order_type, account_id, code, pr_type, price, volume, name, quick, remark))
 
     def namespace(self, **gui):
         return dict(gui, passorder=self.passorder, get_trade_detail_data=self.get_trade_detail_data)
+
+
+def ticks_from(bars, day):
+    """get_full_tick dicts repeating each code's bar on day (YYYYMMDD)."""
+    ticks = {}
+    for code, frame in bars.items():
+        if day in frame.index:
+            row = frame.loc[day]
+            ticks[code] = {'timetag': day + ' 14:56:00', 'lastPrice': float(row['close']), 'open': float(row['open']),
+                           'high': float(row['high']), 'low': float(row['low']), 'amount': float(row['amount'])}
+    return ticks
 
 
 def daily(closes, start='2020-01-01'):
