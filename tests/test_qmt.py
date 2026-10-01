@@ -32,12 +32,16 @@ def test_qmt_market_adjusts_bars_and_keeps_traded_closes():
     C = FakeContextInfo(bars, divid={'000001.SZ': {'20200102': [0.5, 0, 0, 0, 0, 0, 1.0]}},
                         names={'000001.SZ': 'PING AN'}, sectors={'A': ['000001.SZ', '600000.SH']},
                         shares={'000001.SZ': pd.Series([1e9], index=['20190101'])})
-    market = QmtMarket(C, ('A',), HISTORY_BARS)
+    market = QmtMarket(C, ('A',), HISTORY_BARS, '')
+    market.prefetch(['SZ000001', 'SH600000'])
+    assert C.calls == [('get_market_data_ex', 7)]  # one call for the batch and the indices
     assert market.bars('SZ000001').close.tolist() == [9.5, 9.5]
     assert market.unadjusted_close('SZ000001', '2020-01-01') == 10.0
     assert set(market.index_closes()) == set(INDEX_SYMBOLS)
     assert market.universe() == ['SH600000', 'SZ000001']
     assert market.name('SZ000001') == 'PING AN' and market.name('SH600000') is None
+    with pytest.raises(ValueError, match='no daily bars from QMT for 600000.SH'):
+        market.bars('SH600000')
     assert market.total_shares('SZ000001') == {'2019-01-01': 1e9}
 
 
@@ -47,6 +51,8 @@ def test_gui_beats_config_beats_default(monkeypatch):
     assert sorted(run.context.strategies) == [3] and run.context.settings.sectors == ('A',)
     assert "strategies = (3,)  (gui)" in lines and "sectors = ('A',)  (CONFIG)" in lines
     assert "priority = (6, 5, 4, 3, 2, 1)  (default)" in lines
+    run, lines = entry.build_run(FakeContextInfo({}), FakeAccount().namespace(account='ACC'))
+    assert run.context.settings.account_id == 'ACC' and "account_id = 'ACC'  (qmt account)" in lines
     monkeypatch.setattr(entry, 'CONFIG', {'sector': 'A'})
     with pytest.raises(ConfigError, match='CONFIG: unknown keys'):
         entry.build_run(FakeContextInfo({}), FakeAccount().namespace())
@@ -62,13 +68,20 @@ def test_unsafe_trading_setups_are_rejected(backtest, gui, message):
         entry.build_run(FakeContextInfo({}, backtest=backtest), FakeAccount().namespace(**gui))
 
 
+def test_main_chart_must_be_daily():
+    C = FakeContextInfo({})
+    C.period = '5m'
+    with pytest.raises(ConfigError, match='main chart must be daily'):
+        entry.build_run(C, FakeAccount().namespace())
+
+
 def market_with(closes):
     return dict(INDEX_BARS, **{'000001.SZ': daily(closes), '000002.SZ': daily([10.0] * 10)})
 
 
 def run_handlebar(C, account, **gui):
     with redirect_stdout(io.StringIO()) as out:
-        C.chao, _ = entry.build_run(C, account.namespace(**gui))
+        entry.RUN, _ = entry.build_run(C, account.namespace(**gui))
         entry.handlebar(C)
     return out.getvalue().splitlines()
 
@@ -96,7 +109,8 @@ def test_live_dry_run_prints_orders_without_placing(test_strategy):
 def test_live_without_account_only_reports_signals(test_strategy):
     C = FakeContextInfo(market_with([10.0] * 299 + [11.0]), names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
     log = run_handlebar(C, FakeAccount())
-    assert log[-2:] == ['chao: no account_id, so orders are not planned', 'chao: 1 signals, 0 skipped']
+    assert log[-2] == 'chao: no account_id, so orders are not planned'
+    assert log[-1].startswith('chao: 1 signals, 0 skipped, ')
 
 
 def test_live_orders_sell_only_owned_and_update_the_ledger(test_strategy, tmp_path):
@@ -117,9 +131,38 @@ def test_backtest_places_each_bars_orders(test_strategy):
                         backtest=True, bar_dates=dates)
     account = FakeAccount(cash=100000.0)
     with redirect_stdout(io.StringIO()):
-        C.chao, _ = entry.build_run(C, account.namespace(account_id='testS'))
+        entry.RUN, _ = entry.build_run(C, account.namespace(account_id='testS'))
         for position in (298, 299):
             C.barpos = position
             entry.handlebar(C)
-    # Bar 299 buys at 11.0 (quick 0 in backtests); bar 300 has a sell, but nothing is held yet.
-    assert account.orders == [(23, 1101, 'testS', '000001.SZ', 5, 900, 'chao', 0, 'chao-s1')]
+    # Bar 299 buys at 11.0 on its own bar (quickTrade 2); bar 300 has a sell,
+    # but the fake account holds nothing yet.
+    assert account.orders == [(23, 1101, 'testS', '000001.SZ', 5, 900, 'chao', 2, 'chao-s1')]
+    assert C.calls == [('get_market_data_ex', 6)]  # one batch, read once for the whole backtest
+
+
+def test_backtest_sells_owned_stocks_from_the_sell_table(test_strategy):
+    closes = [10.0] * 298 + [11.0, 10.0]
+    dates = pd.bdate_range('2020-01-01', periods=300).strftime('%Y%m%d')
+    C = FakeContextInfo(market_with(closes), names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']},
+                        backtest=True, bar_dates=dates, start='2021-02-23 00:00:00')
+    account = FakeAccount(positions=[Obj(symbol='SZ000001', volume=900, sellable=900, value=9900.0)])
+    with redirect_stdout(io.StringIO()) as out:
+        entry.RUN, _ = entry.build_run(C, account.namespace(account_id='testS'))
+        entry.RUN.ledger.replace({'SZ000001'})
+        C.barpos = 299
+        entry.handlebar(C)
+    assert account.orders == [(24, 1101, 'testS', '000001.SZ', 5, 900, 'chao', 2, 'chao-s1')]
+    # Only the window from C.start is kept: the 2021-02-22 buy falls outside it.
+    assert 'chao: backtest signals ready: 0 buy rows, 1 stocks with sells, 0 skipped' in out.getvalue()
+
+
+def test_restarted_live_run_does_not_repeat_todays_buys(test_strategy, tmp_path):
+    C = FakeContextInfo(market_with([10.0] * 299 + [11.0]), names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
+    account = FakeAccount(cash=100000.0)  # the buy stays unfilled: no position appears
+    gui = dict(account_id='A1', dry_run=0, ledger_path=str(tmp_path / 'ledger.json'))
+    with redirect_stdout(io.StringIO()):
+        for _ in range(2):  # the second build is a strategy restart on the same day
+            entry.RUN, _ = entry.build_run(C, account.namespace(**gui))
+            entry.handlebar(C)
+    assert [o[0] for o in account.orders] == [23]

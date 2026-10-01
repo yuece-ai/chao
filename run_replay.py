@@ -60,7 +60,8 @@ def task(item):
     sid, symbol = item
     code = symbol[2:]
     try:
-        frame, sig = stock_signals(G['strategies'][sid], market_for(sid), symbol)
+        frame, by_strategy = stock_signals([G['strategies'][sid]], market_for(sid), symbol)
+        sig = by_strategy.get(sid)
         if sig is None:
             return sid, code, [], {'error': 'insufficient history'}
         events, summary = replay(frame, sig, G['spec'])

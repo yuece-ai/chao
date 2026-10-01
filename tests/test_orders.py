@@ -1,8 +1,8 @@
 from chao.orders import Book, Holding, Order, lot_volume, plan_orders
 
 
-def book(cash=100000.0, total=100000.0, holdings=None, owned=()):
-    return Book(cash, total, holdings or {}, set(owned))
+def book(cash=100000.0, total=100000.0, holdings=None, owned=(), ordered=()):
+    return Book(cash, total, holdings or {}, set(owned), set(ordered))
 
 
 def test_lots_and_star_minimum():
@@ -39,3 +39,8 @@ def test_priority_resolves_conflicts():
     priority = (6, 5, 4, 3, 2, 1)
     assert plan_orders(signals, b, prices, 1, priority) == [Order('buy', 'SZ000009', 9900, 5)]
     assert plan_orders(signals, b, prices, 2, priority)[1] == Order('buy', 'SZ000001', 4900, 4)
+
+
+def test_symbols_ordered_today_are_not_bought_again():
+    b = book(ordered={'SZ000001'})
+    assert plan_orders([(1, 'SZ000001', 'buy')], b, {'SZ000001': 10.0}, 10, (1,)) == []

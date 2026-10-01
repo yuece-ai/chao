@@ -42,7 +42,7 @@ def tdx_as_qmt(symbols, gbbq):
                                  for r in records if r['Category'] == 1}
         shares[to_qmt(symbol)] = pd.Series({r['Date'][:10].replace('-', ''): r['C4'] * 10000.0
                                             for r in records if r['Category'] == 5})
-    names = {to_qmt(s): 'STOCK' + s for s in symbols}
+    names = {to_qmt(s): 'N' + s for s in symbols}  # must not start with ST: the formulas exclude ST stocks
     return FakeContextInfo(bars, divid=divid, shares=shares, names=names)
 
 
@@ -50,21 +50,24 @@ def test_qmt_adapter_reproduces_the_tdx_path():
     from chao.catalog import strategy_files
     from chao.formulas import load_strategies
     from chao.market import equity_symbol
-    from chao.qmt_source import HISTORY_BARS, QmtMarket
-    from chao.signals import stock_signals, strategy_universe
+    from chao.qmt_source import ALL_BARS, QmtMarket
+    from chao.signals import stock_signals, strategies_for
+    from chao.market import Context
     from chao.tdx_source import TdxMarket
     gbbq = load_gbbq(GBBQ)
     symbols = [equity_symbol(c) for c in SAMPLE]
-    qmt = QmtMarket(tdx_as_qmt(symbols, gbbq), (), HISTORY_BARS)
-    tdx = TdxMarket(RAW, QFQ_ROOT, gbbq, {s[2:]: 'STOCK' + s for s in symbols})
-    strategies = load_strategies(strategy_files())
+    qmt = QmtMarket(tdx_as_qmt(symbols, gbbq), (), ALL_BARS, '')
+    qmt.prefetch(symbols)
+    tdx = TdxMarket(RAW, QFQ_ROOT, gbbq, {s[2:]: 'N' + s for s in symbols})
+    context = Context(None, qmt, load_strategies(strategy_files()))
+    buys = 0
     for symbol in symbols:
-        a, b = qmt.bars(symbol), tdx.bars(symbol).tail(HISTORY_BARS)
+        a, b = qmt.bars(symbol), tdx.bars(symbol)
         pd.testing.assert_frame_equal(a[['open', 'high', 'low', 'close']], b[['open', 'high', 'low', 'close']], check_names=False)
-        for sid in (1, 5, 7):
-            if not strategy_universe(sid, [symbol]):
-                continue
-            _, sig_q = stock_signals(strategies[sid], qmt, symbol)
-            _, sig_t = stock_signals(strategies[sid], tdx, symbol)
-            # MA(250) plus REF warm-up: compare the last 100 bars.
-            pd.testing.assert_frame_equal(sig_q.tail(100), sig_t.tail(100), check_names=False)
+        strategies = strategies_for(context, symbol)
+        _, sig_q = stock_signals(strategies, qmt, symbol)
+        _, sig_t = stock_signals(strategies, tdx, symbol)
+        for sid in sig_t:
+            pd.testing.assert_frame_equal(sig_q[sid], sig_t[sid], check_names=False)
+            buys += int(sig_t[sid]['buy'].sum())
+    assert buys > 20  # 48 today; the sample must exercise buy signals, not only the ST filter

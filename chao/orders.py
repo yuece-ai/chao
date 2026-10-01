@@ -6,7 +6,8 @@ Rules:
   user opened by hand are left alone. Sells use the sellable volume, which
   is how T+1 is respected.
 - At most max_positions chao-owned stocks are held; a stock already in the
-  account (owned or not) is never bought again. Each buy targets
+  account (owned or not), or with a chao order today, is never bought again.
+  The order check keeps a restarted live run from repeating unfilled buys. Each buy targets
   total_asset / max_positions, capped by the cash left.
 - Conflicts follow the strategy priority (highest first): buy candidates
   are taken in (priority, symbol) order, and a stock signalled by several
@@ -31,6 +32,7 @@ class Book(NamedTuple):
     total_asset: float
     holdings: Dict[str, Holding]   # every position in the account
     owned: Set[str]                # symbols chao bought and still tracks
+    ordered: Set[str]              # symbols with a chao order today (live)
 
 
 class Order(NamedTuple):
@@ -65,7 +67,7 @@ def plan_orders(signals, book, prices, max_positions, priority):
     cash = book.cash
     bought = set()
     for sid, symbol, side in ordered:
-        if side != 'buy' or symbol in held or symbol in bought or slots <= 0:
+        if side != 'buy' or symbol in held or symbol in book.ordered or symbol in bought or slots <= 0:
             continue
         price = prices.get(symbol)
         if not price:

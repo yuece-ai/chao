@@ -1,19 +1,24 @@
-"""Signals of one strategy on one stock, from any MarketData."""
-from chao.formulas import signals
+"""Signals of strategies on stocks, from any MarketData."""
+from chao.formulas import bind, signals
 from chao.market import MissingInput, board_index, share_series
 
 MIN_BARS = 260  # MA(250) plus REF lookback
 
 
-def stock_signals(strategy, market, symbol):
-    """(bars, buy/sell DataFrame); signals are None when history is too short."""
+def stock_signals(strategies, market, symbol):
+    """(bars, {strategy id: buy/sell DataFrame}) for one stock; no signals when history is short.
+
+    The stock's data is read once and indicator calls that only depend on it
+    are shared across the strategies.
+    """
     frame = market.bars(symbol)
     if len(frame) < MIN_BARS:
-        return frame, None
+        return frame, {}
     indices = market.index_closes()
-    sig = signals(strategy, frame, indices, indices[board_index(symbol)],
-                  market.name(symbol), share_series(market.total_shares(symbol), frame.index))
-    return frame, sig
+    bound = bind(frame, indices, indices[board_index(symbol)], market.name(symbol),
+                 share_series(market.total_shares(symbol), frame.index))
+    memo = {}
+    return frame, {s.id: signals(s, bound, frame.index, memo) for s in strategies}
 
 
 def strategy_universe(sid, symbols):
@@ -21,25 +26,36 @@ def strategy_universe(sid, symbols):
     return [s for s in symbols if (sid == 7) == s.startswith('BJ')]
 
 
-def scan(context, last_only):
-    """Signals of every enabled strategy over its universe.
+def strategies_for(context, symbol):
+    return [s for _, s in sorted(context.strategies.items()) if strategy_universe(s.id, [symbol])]
+
+
+def history_signals(context, symbols):
+    """Yield (symbol, {strategy id: buy/sell DataFrame}) for each stock, or
+    (symbol, error message) when its data is missing."""
+    for symbol in symbols:
+        strategies = strategies_for(context, symbol)
+        if not strategies:
+            continue
+        try:
+            yield symbol, stock_signals(strategies, context.market, symbol)[1]
+        except (MissingInput, KeyError, ValueError) as exc:
+            yield symbol, '{}: {}'.format(type(exc).__name__, exc)
+
+
+def last_bar_signals(context, symbols):
+    """Signals on each stock's last bar.
 
     Returns ([(date, strategy, symbol, 'buy'|'sell')], [(strategy, symbol, error)]).
-    last_only keeps the last bar of each stock; otherwise every bar is kept.
     """
-    symbols = context.market.universe()
     found, errors = [], []
-    for sid, strategy in sorted(context.strategies.items()):
-        for symbol in strategy_universe(sid, symbols):
-            try:
-                _, sig = stock_signals(strategy, context.market, symbol)
-            except (MissingInput, KeyError, ValueError) as exc:
-                errors.append((sid, symbol, '{}: {}'.format(type(exc).__name__, exc)))
-                continue
-            if sig is None:
-                continue
-            rows = sig.tail(1) if last_only else sig
+    for symbol, result in history_signals(context, symbols):
+        if isinstance(result, str):
+            errors += [(s.id, symbol, result) for s in strategies_for(context, symbol)]
+            continue
+        for sid, sig in result.items():
+            last = sig.iloc[-1]
             for side in ('buy', 'sell'):
-                for date in rows.index[rows[side].values.astype(bool)]:
-                    found.append((date.strftime('%Y-%m-%d'), sid, symbol, side))
-    return sorted(found), errors
+                if last[side]:
+                    found.append((sig.index[-1].strftime('%Y-%m-%d'), sid, symbol, side))
+    return sorted(found), sorted(errors)

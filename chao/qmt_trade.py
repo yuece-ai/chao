@@ -13,9 +13,9 @@ STOCK_BUY, STOCK_SELL = 23, 24
 BY_SHARES = 1101      # volume is a share count
 LATEST_PRICE = 5      # fill at the latest price; the bar close in a backtest
 STRATEGY_NAME = 'chao'
-# Live orders are placed at once on the last bar; backtests use QMT's
-# standard bar handling.
-QUICK_LIVE, QUICK_BACKTEST = 2, 0
+# quickTrade 2 sends the order on the bar that produced the signal, also on
+# historical bars in a backtest; 0 would wait for the next bar.
+QUICK = 2
 
 
 class QmtApi:
@@ -26,23 +26,28 @@ class QmtApi:
         self.get_trade_detail_data = get_trade_detail_data
 
 
-def read_book(api, account_id, owned):
-    accounts = api.get_trade_detail_data(account_id, 'stock', 'ACCOUNT')
+def read_book(api, account_id, owned, live):
+    accounts = api.get_trade_detail_data(account_id, 'STOCK', 'ACCOUNT')
     if not accounts:
         raise RuntimeError('QMT returned no account data for {!r}'.format(account_id))
     holdings = {}
-    for p in api.get_trade_detail_data(account_id, 'stock', 'POSITION'):
+    for p in api.get_trade_detail_data(account_id, 'STOCK', 'POSITION'):
         symbol = p.m_strExchangeID + p.m_strInstrumentID
         holdings[symbol] = Holding(int(p.m_nVolume), int(p.m_nCanUseVolume))
     # Forget owned symbols that are no longer held (sold, or never filled).
     held = {s for s, h in holdings.items() if h.volume > 0}
-    return Book(float(accounts[0].m_dAvailable), float(accounts[0].m_dBalance), holdings, set(owned) & held)
+    # Today's orders placed under chao's strategy name (live only).
+    ordered = ({o.m_strExchangeID + o.m_strInstrumentID
+                for o in api.get_trade_detail_data(account_id, 'STOCK', 'ORDER', STRATEGY_NAME)}
+               if live else set())
+    return Book(float(accounts[0].m_dAvailable), float(accounts[0].m_dBalance), holdings,
+                set(owned) & held, ordered)
 
 
-def place(api, C, account_id, order, quick):
+def place(api, C, account_id, order):
     op = STOCK_BUY if order.side == 'buy' else STOCK_SELL
     api.passorder(op, BY_SHARES, account_id, to_qmt(order.symbol), LATEST_PRICE, -1, order.volume,
-                  STRATEGY_NAME, quick, 'chao-s{}'.format(order.strategy), C)
+                  STRATEGY_NAME, QUICK, 'chao-s{}'.format(order.strategy), C)
 
 
 class Ledger:

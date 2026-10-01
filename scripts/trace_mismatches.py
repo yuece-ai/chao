@@ -9,7 +9,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import pandas as pd
 from chao.catalog import strategy_files
-from chao.formulas import load_strategies, formula_environment, evaluate, parse
+from chao.formulas import bind, load_strategies, formula_environment, evaluate, parse
 from chao.reference import read_references
 from chao.gbbq import load_gbbq
 from chao.market import board_index, equity_symbol, share_series
@@ -32,7 +32,7 @@ def inspect(job):
     market=TdxMarket(cfg['raw_root'],root,G['gbbq'],G['names'])
     idx=market.index_closes(); idxcode=board_index(sym); f=market.bars(sym)
     shares=share_series(market.total_shares(sym),f.index)
-    st=G['strategies'][sid];env=formula_environment(st,f,idx,idx[idxcode],market.name(sym),shares)
+    st=G['strategies'][sid];env=formula_environment(st,bind(f,idx,idx[idxcode],market.name(sym),shares))
     report=[]
     for r in rows:
         d=pd.Timestamp(r['date']);side='买入条件' if r['direction']=='买开' else '卖出条件'; point={'strategy':sid,'code':code,'date':r['date'],'direction':r['direction'],'kind':r['kind'],'indexc':idxcode}
