@@ -33,6 +33,16 @@ nix develop --command python scripts/bundle_qmt.py --config qmt.json   # writes 
 
 Rebuild after changing `qmt.json`; never edit the generated file.
 
+The integration build is committed as `qmt/chao_strategy.py`, built from
+`qmt/integration.json`: backtest account `testS` (QMT's selected account
+overrides it live), trade lists in `D:\chao\report`, ledger in
+`D:\chao\ledger.json`, `dry_run` on. A test keeps it identical to a
+fresh build. After changing the sources, rebuild it:
+
+```sh
+nix develop --command python scripts/bundle_qmt.py --config qmt/integration.json --out qmt/chao_strategy.py
+```
+
 Before running:
 1. Download the data in QMT (数据管理): daily bars for 沪深A股 and the
    indices the enabled strategies read (for strategies 1–6: `000001.SH`,

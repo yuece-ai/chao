@@ -73,3 +73,14 @@ def test_bundle_writes_the_local_config_after_checking_it():
     assert "\nCONFIG = {'account_id': 'A1', 'max_positions': 5}\n" in text
     with pytest.raises(ValueError, match="unknown keys \\['max_position'\\]"):
         bundle('test', {'max_position': 5})
+
+
+def test_committed_qmt_file_matches_the_sources():
+    """qmt/chao_strategy.py is what bundle_qmt.py builds from qmt/integration.json."""
+    import json
+    from pathlib import Path
+    committed = Path('qmt/chao_strategy.py').read_bytes().decode('gbk')
+    revision = committed.splitlines()[1].split(' from ')[1].split(';')[0]
+    config = json.loads(Path('qmt/integration.json').read_text(encoding='utf-8'))
+    assert committed == bundle(revision, config), \
+        'rebuild: python scripts/bundle_qmt.py --config qmt/integration.json --out qmt/chao_strategy.py'
