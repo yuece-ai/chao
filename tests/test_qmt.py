@@ -89,6 +89,14 @@ def run_handlebar(C, account, **gui):
     return out.getvalue().splitlines()
 
 
+@pytest.fixture(autouse=True)
+def share_downloads(monkeypatch):
+    """xtquant exists only inside the QMT client; record the requested codes instead."""
+    seen = []
+    monkeypatch.setattr(entry, 'download_shares', seen.append)
+    return seen
+
+
 @pytest.fixture
 def test_strategy(monkeypatch):
     monkeypatch.setattr(entry, 'strategy_files', lambda: TEST_STRATEGY)
@@ -403,3 +411,8 @@ def test_folder_summary_counts_files_in_subfolders(tmp_path):
     (tmp_path / 'SH').mkdir()
     (tmp_path / 'SH' / '600000.dat').write_bytes(b'xx')
     assert folder_summary(str(tmp_path)).startswith("1 files, subfolders ['SH'], newest ['SH")
+
+
+def test_a_backtest_downloads_the_share_table_first(test_strategy, share_downloads):
+    run_backtest(backtest_client([10.0] * 300, start='2021-02-01 00:00:00'), FakeAccount(), [299])
+    assert share_downloads == [['000001.SZ']]
