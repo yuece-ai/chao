@@ -28,7 +28,7 @@ from chao.orders import plan_orders
 from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, qmt_date
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, text
-from chao.signals import history_signals, last_bar_signals, strategies_for
+from chao.signals import history_signals, last_bar_signals, required_indices, strategies_for
 
 # Code configuration: edit here when a value should not be a GUI parameter.
 CONFIG = {}
@@ -74,6 +74,7 @@ class Run:
 
     def __init__(self, context, api, ledger, backtest):
         self.context, self.api, self.ledger, self.backtest = context, api, ledger, backtest
+        self.index_codes = sorted(required_indices(context.strategies.values()))
         self.buys = None              # backtest: {date: [(strategy, symbol, 'buy')]}
         self.sells = {}               # backtest: {symbol: DataFrame of sell flags, one column per strategy}
         self.prices = {}              # {(date, symbol): unadjusted close} of buy signals
@@ -159,13 +160,17 @@ def trade(C, run, date, buys, sells_for, placing):
     sells = [(sid, symbol, 'sell') for symbol in sorted(book.owned) for sid in sells_for(symbol)]
     prices = {symbol: run.prices.get((date, symbol)) for _, symbol, _ in buys}
     orders = plan_orders(buys + sells, book, prices, settings.max_positions, settings.priority)
+    owned = set(book.owned)
+    if placing:
+        run.ledger.replace(owned)  # forget symbols no longer held
     for order in orders:
         if placing:
             place(run.api, C, settings.account_id, order)
+            if order.side == 'buy':
+                owned.add(order.symbol)
+                run.ledger.replace(owned)  # at once, so a later failure cannot orphan the buy
         print('chao: order {} {} {} {} strategy={}{}'.format(
             date, order.side, order.symbol, order.volume, order.strategy, '' if placing else ' (dry-run)'))
-    if placing:
-        run.ledger.replace(book.owned | {o.symbol for o in orders if o.side == 'buy'})
     return orders
 
 
@@ -175,7 +180,7 @@ def prepare_backtest(run, start):
     market, end = run.context.market, run.context.market.end_time
     run.buys, errors = {}, []
     for batch in batches(market.universe()):
-        market.prefetch(batch)
+        market.prefetch(batch, run.index_codes)
         for symbol, result in history_signals(run.context, batch):
             if isinstance(result, str):
                 errors += [(s.id, symbol, result) for s in strategies_for(run.context, symbol)]
@@ -189,7 +194,7 @@ def prepare_backtest(run, start):
             sells = pd.DataFrame({sid: sig['sell'] for sid, sig in window.items()})
             if sells.values.any():
                 run.sells[symbol] = sells
-    last = market.index_closes()['999999'].index[-1].strftime('%Y%m%d')
+    last = min(c.index[-1] for c in market.index_closes().values()).strftime('%Y%m%d')
     if last < end:
         raise MissingInput('QMT bars end on {}, before the backtest end {}; download the history first'
                            .format(last, end))
@@ -228,9 +233,13 @@ def live_day(C, run, date):
     """Today's last-bar signals for the whole universe, read in batches."""
     started = time.time()
     market = run.context.market
-    found, errors = [], []
+    found, errors, stale = [], [], 0
     for batch in batches(run.universe):
-        market.prefetch(batch)
+        market.prefetch(batch, run.index_codes, today=date)
+        behind = {code: c.index[-1] for code, c in market.index_closes().items() if c.index[-1] != pd.Timestamp(date)}
+        if behind:
+            raise MissingInput('indices without a bar for {}: {}'.format(date, sorted(behind)))
+        stale += sum(1 for s in batch if market.last_bar_date(s) != pd.Timestamp(date))
         rows, bad = last_bar_signals(run.context, batch)
         rows = [r for r in rows if r[0] == date]
         for _, _, symbol, side in rows:
@@ -249,7 +258,8 @@ def live_day(C, run, date):
               placing=not run.context.settings.dry_run)
     else:
         print('chao: no account_id, so orders are not planned')
-    print('chao: {} signals, {} skipped, {:.0f}s'.format(len(found), len(errors), time.time() - started))
+    print('chao: {} signals, {} skipped, {} without a bar today (suspended or no tick), {:.0f}s'.format(
+        len(found), len(errors), stale, time.time() - started))
 
 
 def init(C):
@@ -275,5 +285,5 @@ def handlebar(C):
         refresh_static(run, date)
     if datetime.datetime.now().strftime('%H:%M') < run.context.settings.trade_time:
         return
+    run.done.add(date)  # before the scan: a failure is reported once, not on every tick
     live_day(C, run, date)
-    run.done.add(date)

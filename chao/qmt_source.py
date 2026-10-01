@@ -89,6 +89,31 @@ def name_text(value):
     return value.decode('gbk') if isinstance(value, bytes) else str(value)
 
 
+TICK_FIELDS = {'open': 'open', 'high': 'high', 'low': 'low', 'close': 'lastPrice', 'amount': 'amount'}
+
+
+def tick_date(tick):
+    """Day of a tick: timetag is '20240527 14:50:03' or epoch milliseconds."""
+    stamp = tick.get('timetag')
+    if isinstance(stamp, str) and len(stamp) >= 8 and stamp[:8].isdigit():
+        return pd.Timestamp(stamp[:8])
+    return qmt_date(stamp) if stamp else None
+
+
+def with_ticks(frames, ticks, today):
+    """Frames with today's bar set from get_full_tick, for codes whose tick
+    is from today and has traded; other frames are left as they are."""
+    day = pd.Timestamp(today)
+    result = dict(frames)
+    for code, tick in (ticks or {}).items():
+        if not tick or float(tick.get('lastPrice') or 0) <= 0 or tick_date(tick) != day:
+            continue
+        row = pd.DataFrame({k: [float(tick[v])] for k, v in TICK_FIELDS.items()}, index=[day])
+        frame = result.get(code)
+        result[code] = row if frame is None else pd.concat([frame[frame.index < day], row])[BAR_FIELDS]
+    return result
+
+
 class QmtMarket(MarketData):
     def __init__(self, context_info, sectors, history_bars, end_time):
         self.C = context_info          # rebound by the entry on every QMT call
@@ -116,21 +141,30 @@ class QmtMarket(MarketData):
             frames[code] = frame
         return frames
 
-    def prefetch(self, symbols):
-        """Read the bars of one batch of stocks and the indices in one call."""
-        codes = [to_qmt(s) for s in symbols] + list(QMT_INDEX.values())
+    def prefetch(self, symbols, index_codes, today=None):
+        """Read the bars of one batch of stocks and the needed indices in one
+        call. Live (today given), today's bar comes from the latest ticks:
+        subscribe=False reads local data, which ends yesterday intraday."""
+        qmt_index = {code: QMT_INDEX[code] for code in sorted(index_codes)}
+        codes = [to_qmt(s) for s in symbols] + list(qmt_index.values())
         frames = self._fetch(codes)
-        missing = [c for c in QMT_INDEX.values() if c not in frames]
+        if today is not None:
+            frames = with_ticks(frames, self.C.get_full_tick(codes), today)
+        missing = [c for c in qmt_index.values() if c not in frames]
         if missing:
             raise MissingInput('no daily bars from QMT for indices {}; download them first'.format(missing))
-        self._raw = {from_qmt(c): f for c, f in frames.items() if c not in QMT_INDEX.values()}
-        self._index_closes = {code: frames[QMT_INDEX[code]]['close'] for code in INDEX_SYMBOLS}
+        self._raw = {from_qmt(c): f for c, f in frames.items() if c not in qmt_index.values()}
+        self._index_closes = {code: frames[c]['close'] for code, c in qmt_index.items()}
 
     def universe(self):
         codes = set()
         for sector in self.sectors:
             codes.update(self.C.get_stock_list_in_sector(sector))
         return sorted(from_qmt(code) for code in codes)
+
+    def last_bar_date(self, symbol):
+        raw = self._raw.get(symbol)
+        return None if raw is None or raw.empty else raw.index[-1]
 
     def raw_bars(self, symbol):
         if symbol not in self._raw:

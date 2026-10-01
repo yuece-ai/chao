@@ -33,11 +33,11 @@ def test_qmt_market_adjusts_bars_and_keeps_traded_closes():
                         names={'000001.SZ': 'PING AN'}, sectors={'A': ['000001.SZ', '600000.SH']},
                         shares={'000001.SZ': pd.Series([1e9], index=['20190101'])})
     market = QmtMarket(C, ('A',), HISTORY_BARS, '')
-    market.prefetch(['SZ000001', 'SH600000'])
-    assert C.calls == [('get_market_data_ex', 7)]  # one call for the batch and the indices
+    market.prefetch(['SZ000001', 'SH600000'], ['999999', '399001'])
+    assert C.calls == [('get_market_data_ex', 4)]  # one call for the batch and the needed indices
     assert market.bars('SZ000001').close.tolist() == [9.5, 9.5]
     assert market.unadjusted_close('SZ000001', '2020-01-01') == 10.0
-    assert set(market.index_closes()) == set(INDEX_SYMBOLS)
+    assert set(market.index_closes()) == {'999999', '399001'}
     assert market.universe() == ['SH600000', 'SZ000001']
     assert market.name('SZ000001') == 'PING AN' and market.name('SH600000') is None
     with pytest.raises(ValueError, match='no daily bars from QMT for 600000.SH'):
@@ -138,7 +138,8 @@ def test_backtest_places_each_bars_orders(test_strategy):
     # Bar 299 buys at 11.0 on its own bar (quickTrade 2); bar 300 has a sell,
     # but the fake account holds nothing yet.
     assert account.orders == [(23, 1101, 'testS', '000001.SZ', 5, 900, 'chao', 2, 'chao-s1')]
-    assert C.calls == [('get_market_data_ex', 6)]  # one batch, read once for the whole backtest
+    # One batch plus the four SH/SZ board indices, read once for the whole backtest.
+    assert C.calls == [('get_market_data_ex', 5)]
 
 
 def test_backtest_sells_owned_stocks_from_the_sell_table(test_strategy):
@@ -166,3 +167,31 @@ def test_restarted_live_run_does_not_repeat_todays_buys(test_strategy, tmp_path)
             entry.RUN, _ = entry.build_run(C, account.namespace(**gui))
             entry.handlebar(C)
     assert [o[0] for o in account.orders] == [23]
+
+
+def test_live_takes_todays_bar_from_ticks(test_strategy):
+    # Local daily bars (subscribe=False) end yesterday; today's bar comes from get_full_tick.
+    bars = market_with([10.0] * 299 + [11.0])
+    yesterday = {code: frame.iloc[:-1] for code, frame in bars.items()}
+    def tick(close):
+        return {'timetag': '20210223 14:50:00', 'lastPrice': close, 'open': close, 'high': close,
+                'low': close, 'amount': 1e8}
+    ticks = dict({code: tick(1000.0) for code in QMT_INDEX.values()}, **{'000001.SZ': tick(11.0)})
+    C = FakeContextInfo(yesterday, names={'000001.SZ': 'X', '000002.SZ': 'Y'},
+                        sectors={'A': ['000001.SZ', '000002.SZ']}, ticks=ticks)
+    log = run_handlebar(C, FakeAccount(cash=100000.0), account_id='A1', max_positions=2)
+    assert 'chao: signal 2021-02-23 strategy=1 SZ000001 buy' in log
+    assert 'chao: order 2021-02-23 buy SZ000001 4500 strategy=1 (dry-run)' in log
+    # 000002 has no tick today (suspended): it gets no bar for today and is counted.
+    assert ' 1 without a bar today ' in log[-1]
+
+
+def test_live_stops_when_indices_have_no_bar_today(test_strategy):
+    bars = market_with([10.0] * 299 + [11.0])
+    yesterday = {code: frame.iloc[:-1] for code, frame in bars.items()}
+    C = FakeContextInfo(yesterday, names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
+    account = FakeAccount()
+    with pytest.raises(ValueError, match='indices without a bar for 2021-02-23'):
+        run_handlebar(C, account, account_id='A1')
+    entry.handlebar(C)  # the next tick does not retry the failed day
+    assert C.calls.count(('get_full_tick', 5)) == 1

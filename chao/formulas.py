@@ -36,6 +36,14 @@ def parse_strategy(sid, text):
     return Strategy(sid, header.group(1) if header else str(sid), assignments, program)
 
 
+INDEX_REF = re.compile(r'"([0-9]+)\$C"')
+
+
+def referenced_indices(strategy):
+    """Index codes a formula reads explicitly, e.g. "399006$C"."""
+    return {code for _, e in strategy.assignments for code in INDEX_REF.findall(e)}
+
+
 def load_strategies(files):
     """{file name: formula text} -> {id: Strategy}; the id is the name prefix."""
     result = {}
@@ -48,7 +56,7 @@ def load_strategies(files):
 
 
 def parse(expression):
-    expression = re.sub(r'"([0-9]+)\$C"', r'INDEX("\1")', expression)
+    expression = INDEX_REF.sub(r'INDEX("\1")', expression)
     expression = re.sub(r'\bAND\b', 'and', expression)
     expression = re.sub(r'\bOR\b', 'or', expression)
     expression = re.sub(r'(?<![<>=!])=(?!=)', '==', expression)

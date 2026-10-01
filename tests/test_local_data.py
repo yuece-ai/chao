@@ -50,6 +50,7 @@ def test_qmt_adapter_reproduces_the_tdx_path():
     from chao.catalog import strategy_files
     from chao.formulas import load_strategies
     from chao.market import equity_symbol
+    from chao.market import INDEX_SYMBOLS
     from chao.qmt_source import ALL_BARS, QmtMarket
     from chao.signals import stock_signals, strategies_for
     from chao.market import Context
@@ -57,7 +58,7 @@ def test_qmt_adapter_reproduces_the_tdx_path():
     gbbq = load_gbbq(GBBQ)
     symbols = [equity_symbol(c) for c in SAMPLE]
     qmt = QmtMarket(tdx_as_qmt(symbols, gbbq), (), ALL_BARS, '')
-    qmt.prefetch(symbols)
+    qmt.prefetch(symbols, sorted(INDEX_SYMBOLS))
     tdx = TdxMarket(RAW, QFQ_ROOT, gbbq, {s[2:]: 'N' + s for s in symbols})
     context = Context(None, qmt, load_strategies(strategy_files()))
     buys = 0

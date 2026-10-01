@@ -5,7 +5,7 @@ import pandas as pd
 class FakeContextInfo:
     def __init__(self, bars, divid=None, names=None, shares=None, sectors=None, last_bar=True,
                  backtest=False, bar_dates=('20210223',), start='2020-01-01 00:00:00',
-                 end='2021-02-23 15:00:00'):
+                 end='2021-02-23 15:00:00', ticks=None):
         self.bars = bars            # {qmt code: DataFrame indexed by 'YYYYMMDD'}
         self.divid = divid or {}    # {qmt code: {'YYYYMMDD': [7 per-share values]}}
         self.names = names or {}
@@ -15,6 +15,7 @@ class FakeContextInfo:
         self.do_back_test = backtest
         self.period = '1d'
         self.start, self.end = start, end
+        self.ticks = ticks or {}          # {qmt code: get_full_tick dict}
         self.calls = []                   # (function, number of codes) per data call
         self.bar_dates = list(bar_dates)  # one 'YYYYMMDD' per bar position
         self.barpos = len(self.bar_dates) - 1
@@ -29,6 +30,11 @@ class FakeContextInfo:
                 frame = frame[frame.index <= end_time] if end_time else frame
                 result[code] = frame if count == -1 else frame.tail(count)
         return result
+
+    def get_full_tick(self, codes):
+        assert not self.do_back_test, 'get_full_tick cannot be used in a backtest'
+        self.calls.append(('get_full_tick', len(codes)))
+        return {c: self.ticks[c] for c in codes if c in self.ticks}
 
     def get_divid_factors(self, code):
         return self.divid.get(code, {})

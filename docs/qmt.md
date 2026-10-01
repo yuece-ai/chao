@@ -28,9 +28,10 @@ nix develop --command python scripts/bundle_qmt.py   # writes dist/chao_strategy
 ```
 
 Before running:
-1. Download the data in QMT (数据管理): daily bars for 沪深A股 and the five
-   formula indices (`000001.SH`, `399001.SZ`, `399006.SZ`, `000688.SH`,
-   `899050.BJ`), ex-rights data and financial data.
+1. Download the data in QMT (数据管理): daily bars for 沪深A股 and the
+   indices the enabled strategies read (for strategies 1–6: `000001.SH`,
+   `399001.SZ`, `399006.SZ`, `000688.SH`), ex-rights data and financial
+   data. Keep the daily data current; live runs add only today's bar.
 2. Copy `dist/chao_strategy.py` into QMT's strategy directory.
 3. Set the main chart to daily (1d); the strategy refuses other periods.
 
@@ -45,9 +46,18 @@ Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
   `C.end`, the run stops and asks for the history to be downloaded.
 - **Live:** only on the last bar. On the first tick of each day, the
   universe and the per-stock static data (ex-rights, total shares, names)
-  are read. Once a day at or after `trade_time`, the last bar's signals are
-  computed and the orders are sent, or only printed while `dry_run` is on
-  (the default).
+  are read. Once a day at or after `trade_time`, the signals are computed
+  and the orders are sent, or only printed while `dry_run` is on (the
+  default).
+  - `get_market_data_ex(subscribe=False)` reads local data, which ends
+    yesterday during the session. Today's bar therefore comes from one
+    `get_full_tick` call per batch: open, high, low, `lastPrice` as the
+    close, and amount.
+  - A stock with no tick today (suspended) gets no bar and no signal, and
+    the run prints how many there were. If an index has no bar for today,
+    the run stops.
+  - The day is marked as attempted before the scan, so a failure is
+    reported once rather than on every tick.
 
 State lives in a module-level object. QMT rolls back attributes set on
 `ContextInfo` between `handlebar` calls, so nothing is stored there.
@@ -76,8 +86,9 @@ The log goes to stdout (the QMT console), one line per event, prefixed `chao:`:
   decides. Buys are taken in (priority, symbol) order, and a stock signalled
   by several strategies belongs to the highest-priority one.
 - **Ledger:** in a backtest it lives in memory. For live orders it is the
-  JSON file at `ledger_path`. A symbol leaves the ledger once it is no
-  longer held.
+  JSON file at `ledger_path`, written after every placed buy, so a failure
+  later in the loop cannot leave a bought stock untracked (and never sold).
+  A symbol leaves the ledger once it is no longer held.
 
 ## Settings
 
@@ -108,6 +119,7 @@ functions, variable conventions and usage notes.
 | `get_financial_data(['CAPITALSTRUCTURE.total_capital'], [code], start, end, report_type='announce_time')` | one stock over a range: DataFrame indexed by date, one column per field, in shares |
 | `get_instrumentdetail(code)['InstrumentName']` | stock name; `get_stock_name` is slated for removal and returns GBK |
 | `get_stock_list_in_sector(sector)` | list of `'600000.SH'` codes |
+| `get_full_tick(codes)` | `{code: tick}` with `timetag`, `lastPrice`, `open`, `high`, `low`, `amount`; latest tick only, unusable in backtests |
 | `get_bar_timetag(barpos)`, `barpos`, `period`, `do_back_test`, `start`, `end`, `is_last_bar()` | bar time in epoch ms; read-only run attributes |
 | `get_trade_detail_data(account, 'STOCK', 'ACCOUNT'/'POSITION'/'ORDER', strategy)` | `m_dAvailable`, `m_dBalance`; `m_strExchangeID`, `m_strInstrumentID`, `m_nVolume`, `m_nCanUseVolume` |
 | `passorder(23/24, 1101, account, code, 5, -1, volume, 'chao', 2, remark, C)` | buy/sell by shares at the latest price; quickTrade 2 sends on the current bar, also on historical bars |
@@ -127,7 +139,7 @@ so QMT's own call latency is not included. The universe is about 5,100
 | Phase | Cost per stock | Whole universe | QMT calls |
 |---|---|---|---|
 | Live, first tick of the day: static data | 0.4 ms + 3 calls | ~2 s + call latency | ~15,000 |
-| Live, at trade_time: 400 bars, 6 strategies | 13.8 ms | ~70 s + batch reads | 26 batched bar reads + 2–3 account reads |
+| Live, at trade_time: 400 bars plus today's tick, 6 strategies | 14.5 ms | ~75 s + batch reads | 26 batched bar reads + 26 tick reads + 2–3 account reads |
 | Backtest preparation: full history, 6 strategies | 31 ms | ~160 s + reads | 26 batched bar reads + 15,000 static reads |
 | Backtest, per bar | — | under 1 ms + 2–3 account reads | 2–3 |
 
@@ -150,6 +162,9 @@ Is this acceptable?
 - **Backtest:** a few minutes of one-time preparation, then fast bars.
 
 Known differences from the TDX parity replay:
+- At 14:50, today's close and AMO (turnover) are intraday values. AMO is
+  still short of the full day, so the AMO filters (e.g. `AMO>200000000`)
+  pass less often than in a backtest that uses the full-day bar.
 - TDX gives every stock its own 1,000,000; here all strategies share one
   account.
 - The backtest universe is today's sector list, so delisted stocks are

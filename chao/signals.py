@@ -1,5 +1,5 @@
 """Signals of strategies on stocks, from any MarketData."""
-from chao.formulas import bind, signals
+from chao.formulas import bind, referenced_indices, signals
 from chao.market import MissingInput, board_index, share_series
 
 MIN_BARS = 260  # MA(250) plus REF lookback
@@ -24,6 +24,19 @@ def stock_signals(strategies, market, symbol):
 def strategy_universe(sid, symbols):
     """Strategy 7 trades the Beijing exchange; strategies 1-6 trade SH and SZ."""
     return [s for s in symbols if (sid == 7) == s.startswith('BJ')]
+
+
+# Board indices INDEXC can resolve to, per strategy universe (see board_index).
+SH_SZ_BOARD_INDICES = {'999999', '399001', '399006', '000688'}
+BJ_BOARD_INDICES = {'899050'}
+
+
+def required_indices(strategies):
+    """Index codes the given strategies can read, via INDEXC or "code$C"."""
+    codes = set()
+    for s in strategies:
+        codes |= referenced_indices(s) | (BJ_BOARD_INDICES if s.id == 7 else SH_SZ_BOARD_INDICES)
+    return codes
 
 
 def strategies_for(context, symbol):
