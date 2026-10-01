@@ -7,7 +7,7 @@ from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from chao.data import equity_files
 from chao.market import MissingInput, equity_symbol
-from chao.signals import stock_signals
+from chao.signals import stock_signals, strategy_universe
 from chao.tdx_source import TdxMarket
 from chao.catalog import strategy_files
 from chao.formulas import load_strategies
@@ -98,8 +98,7 @@ def main():
     if args.limit:
         symbols = symbols[:args.limit]
     selected = sorted(settings.strategies)
-    # Strategy 7 is the Beijing exchange strategy; 1-6 cover SH and SZ.
-    jobs = [(sid, s) for sid in selected for s in symbols if (sid == 7) == s.startswith('BJ')]
+    jobs = [(sid, s) for sid in selected for s in strategy_universe(sid, symbols)]
     workers = max(1, min(settings.workers, os.cpu_count() or 1))
     actual = {sid: [] for sid in range(1, 8)}; errors = []
     with ProcessPoolExecutor(max_workers=workers, initializer=init_worker, initargs=(settings, names)) as pool:

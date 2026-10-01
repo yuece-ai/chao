@@ -110,9 +110,11 @@ def bind(frame, indices, indexc, name, shares):
         if field != 1: raise ValueError('Unknown FINANCE field {}'.format(field))
         if shares is None: raise MissingInput('FINANCE(1) needs a share-capital series')
         return shares
-    return dict(FINANCE=finance, INDEX=index,
-                # Missing names must not pass the formula's ST exclusion.
-                NAMELIKE=lambda prefix: (None if not name else int(name.startswith(prefix))),
+    def namelike(prefix):
+        # Without a name the ST exclusion cannot be decided.
+        if not name: raise MissingInput('NAMELIKE needs the stock name')
+        return int(name.startswith(prefix))
+    return dict(FINANCE=finance, INDEX=index, NAMELIKE=namelike,
                 CLOSE=frame.close, HIGH=frame.high, LOW=frame.low, AMO=frame.amount,
                 INDEXC=indexc.reindex(frame.index))
 

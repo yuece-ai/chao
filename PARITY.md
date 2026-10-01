@@ -130,5 +130,5 @@ PYTHONPATH=. nix develop --command python scripts/audit_residuals.py \
 ## Known limits
 
 - `gbbq.json` is a JSON decode of TDX's GBBQ file, and its producer is not in this repository.
-- `NAMELIKE` only knows the names in the reference exports. For any other stock the name is unknown, so the ST filter rejects it, and a full-universe run (without `--reference-only`) never buys those stocks.
+- On Linux, `NAMELIKE` only knows the names in the reference exports. A full-universe run (without `--reference-only`) reports every other stock as skipped with `MissingInput`. In QMT, names come from the client.
 - The ledger reproduces TDX's historical backtest. It is not an execution model for live trading.

@@ -40,7 +40,9 @@ def number(value):
 
 
 def id_list(value):
-    """'1,2,7' or [1, 2, 7] -> (1, 2, 7)."""
+    """'1,2,7', [1, 2, 7] or a GUI number 3 -> tuple of ints."""
+    if isinstance(value, (int, float)):
+        return (int(value),)
     items = value.split(',') if isinstance(value, str) else value
     return tuple(int(x) for x in items if str(x).strip())
 

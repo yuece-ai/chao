@@ -14,3 +14,8 @@ def stock_signals(strategy, market, symbol):
     sig = signals(strategy, frame, indices, indices[board_index(symbol)],
                   market.name(symbol), share_series(market.total_shares(symbol), frame.index))
     return frame, sig
+
+
+def strategy_universe(sid, symbols):
+    """Strategy 7 trades the Beijing exchange; strategies 1-6 trade SH and SZ."""
+    return [s for s in symbols if (sid == 7) == s.startswith('BJ')]
