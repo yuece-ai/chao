@@ -11,6 +11,10 @@
       OPENBLAS_NUM_THREADS = "1";
       OMP_NUM_THREADS = "1";
       MKL_NUM_THREADS = "1";
+      # The vermin package hook rewrites PYTHONPATH; keep the repo importable.
+      shellHook = ''
+        export PYTHONPATH="$PWD''${PYTHONPATH:+:$PYTHONPATH}"
+      '';
     };
   };
 }

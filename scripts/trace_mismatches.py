@@ -11,14 +11,14 @@ import pandas as pd
 from chao.catalog import strategy_files
 from chao.formulas import load_strategies, formula_environment, evaluate, parse
 from chao.reference import read_references
-from chao.gbbq import load_gbbq, total_shares
-from chao.data import INDEX_SYMBOLS, board_index, equity_symbol, load_prices
+from chao.gbbq import load_gbbq
+from chao.market import board_index, equity_symbol, share_series
+from chao.tdx_source import TdxMarket
 
 G={}
-def initialize(cfg):
+def initialize(cfg, names):
     G['cfg']=cfg; G['strategies']=load_strategies(strategy_files())
-    G['idx']={k:load_prices(cfg,sym).close for k,sym in INDEX_SYMBOLS.items()}
-    G['gbbq']=load_gbbq(cfg['gbbq_path'])
+    G['gbbq']=load_gbbq(cfg['gbbq_path']); G['names']=names
 
 def value(v,d):
     if hasattr(v,'loc'): v=v.loc[d]
@@ -28,15 +28,11 @@ def value(v,d):
 
 def inspect(job):
     sid,code,rows=job;cfg=G['cfg']; sym=equity_symbol(code)
-    root=cfg.get('qfq_root_by_strategy',{}).get(str(sid))
-    if root:
-        cfg={**cfg,'qfq_root':root}
-    idx=G['idx'] if not root else {k:load_prices(cfg,s).close for k,s in INDEX_SYMBOLS.items()}
-    idxcode=board_index(sym)
-    f=load_prices(cfg,sym);shares=total_shares(G['gbbq'].get(code,[]))
-    if shares: shares=pd.Series({pd.Timestamp(d):float(v) for d,v in shares.items()}).sort_index().reindex(f.index,method='ffill').fillna(0)*10000
-    else:shares=None
-    st=G['strategies'][sid];env=formula_environment(st,f,idx,idx[idxcode],rows[0].get('name',''),shares)
+    root=cfg.get('qfq_root_by_strategy',{}).get(str(sid)) or cfg['qfq_root']
+    market=TdxMarket(cfg['raw_root'],root,G['gbbq'],G['names'])
+    idx=market.index_closes(); idxcode=board_index(sym); f=market.bars(sym)
+    shares=share_series(market.total_shares(sym),f.index)
+    st=G['strategies'][sid];env=formula_environment(st,f,idx,idx[idxcode],market.name(sym),shares)
     report=[]
     for r in rows:
         d=pd.Timestamp(r['date']);side='买入条件' if r['direction']=='买开' else '卖出条件'; point={'strategy':sid,'code':code,'date':r['date'],'direction':r['direction'],'kind':r['kind'],'indexc':idxcode}
@@ -73,7 +69,7 @@ def main():
         for kind in ['missing','extra']:
             for code,date,direction in s['reference_score'][kind]:jobs[sid,code].append({'date':date,'direction':direction,'kind':kind,'name':names.get(code,'')})
     out=[]
-    with ProcessPoolExecutor(max_workers=a.workers,initializer=initialize,initargs=(cfg,)) as pool:
+    with ProcessPoolExecutor(max_workers=a.workers,initializer=initialize,initargs=(cfg,names)) as pool:
         for rows in pool.map(inspect,[(sid,code,rows) for (sid,code),rows in jobs.items()]):out.extend(rows)
     Path(a.out).write_text(json.dumps(out,ensure_ascii=False,indent=2,allow_nan=False))
     print(json.dumps({'events':len(out),'failed_conditions':sum(r.get('formula_condition') is False for r in out),'failed_assignments':Counter(k for r in out for k in r.get('failed_assignments',[]))},ensure_ascii=False))

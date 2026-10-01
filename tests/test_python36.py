@@ -3,7 +3,8 @@ import shutil
 import subprocess
 import pytest
 
-QMT_MODULES = ['chao/indicators.py', 'chao/formulas.py', 'chao/qfq.py']
+QMT_MODULES = ['chao/indicators.py', 'chao/formulas.py', 'chao/qfq.py', 'chao/settings.py',
+               'chao/market.py', 'chao/signals.py']
 
 
 @pytest.mark.skipif(shutil.which('vermin') is None, reason='vermin not installed')

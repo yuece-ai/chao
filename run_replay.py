@@ -5,17 +5,17 @@ import argparse, json, os, sys
 from collections import namedtuple
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-import pandas as pd
-from chao.data import (INDEX_SYMBOLS, MissingInput, board_index, equity_files,
-                       equity_symbol, load_prices)
+from chao.data import equity_files
+from chao.market import MissingInput, equity_symbol
+from chao.signals import stock_signals
+from chao.tdx_source import TdxMarket
 from chao.catalog import strategy_files
-from chao.formulas import load_strategies, signals
-from chao.gbbq import load_gbbq, total_shares
+from chao.formulas import load_strategies
+from chao.gbbq import load_gbbq
 from chao.replay import ReplaySpec, replay
 from chao.reference import read_references, score
 from chao.settings import REQUIRED, ConfigError, Field, describe, id_list, integer, load, number, path_map, text
 
-MIN_BARS = 260
 G = {}
 
 FIELDS = [
@@ -36,10 +36,13 @@ FIELDS = [
 ReplaySettings = namedtuple('ReplaySettings', [f.key for f in FIELDS])
 
 
-def strategy_config(settings, sid):
+def market_for(sid):
     """Each TDX export carries its own adjustment snapshot (see PARITY.md)."""
-    return {'raw_root': settings.raw_root,
-            'qfq_root': settings.qfq_root_by_strategy.get(sid, settings.qfq_root)}
+    settings = G['settings']
+    root = settings.qfq_root_by_strategy.get(sid, settings.qfq_root)
+    if root not in G['markets']:
+        G['markets'][root] = TdxMarket(settings.raw_root, root, G['gbbq'], G['names'])
+    return G['markets'][root]
 
 
 def replay_spec(settings):
@@ -47,26 +50,9 @@ def replay_spec(settings):
                       buy_fee_rate=settings.buy_fee_rate, sell_fee_rate=settings.sell_fee_rate)
 
 
-def indices_for(config):
-    root = config['qfq_root']
-    if root not in G['indices']:
-        G['indices'][root] = {code: load_prices(config, symbol)['close']
-                              for code, symbol in INDEX_SYMBOLS.items()}
-    return G['indices'][root]
-
-
-def share_capital(code, index):
-    """FINANCE(1) in shares on each bar."""
-    history = total_shares(G['gbbq'].get(code, []))
-    if not history:
-        return None
-    series = pd.Series({pd.Timestamp(d): float(v) for d, v in history.items()}).sort_index()
-    return series.reindex(index, method='ffill').fillna(0.0) * 10000.0
-
-
 def init_worker(settings, names):
     G.update(settings=settings, names=names, strategies=load_strategies(strategy_files()),
-             spec=replay_spec(settings), indices={})
+             spec=replay_spec(settings), markets={})
     G['gbbq'] = load_gbbq(settings.gbbq_path)
 
 
@@ -74,13 +60,9 @@ def task(item):
     sid, symbol = item
     code = symbol[2:]
     try:
-        config = strategy_config(G['settings'], sid)
-        frame = load_prices(config, symbol)
-        if len(frame) < MIN_BARS:
+        frame, sig = stock_signals(G['strategies'][sid], market_for(sid), symbol)
+        if sig is None:
             return sid, code, [], {'error': 'insufficient history'}
-        indices = indices_for(config)
-        sig = signals(G['strategies'][sid], frame, indices, indices[board_index(symbol)],
-                      G['names'].get(code, ''), share_capital(code, frame.index))
         events, summary = replay(frame, sig, G['spec'])
         for e in events:
             e.update(strategy=sid, code=code)

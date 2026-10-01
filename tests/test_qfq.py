@@ -1,6 +1,6 @@
 import pandas as pd
 import pytest
-from chao.data import board_index, equity_symbol
+from chao.market import board_index, equity_symbol
 from chao.gbbq import total_shares
 from chao.qfq import ex_rights, field, forward_adjust
 

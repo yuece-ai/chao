@@ -8,7 +8,8 @@ import argparse, json
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from chao.data import INDEX_SYMBOLS, equity_files, read_day, symbol_path
+from chao.data import equity_files, read_day, symbol_path
+from chao.market import INDEX_SYMBOLS
 from chao.gbbq import load_gbbq
 from chao.qfq import PRICE_COLUMNS, ex_rights, forward_adjust
 

@@ -8,7 +8,7 @@ import re
 from typing import List, NamedTuple, Tuple
 import numpy as np
 import pandas as pd
-from chao.data import MissingInput
+from chao.market import MissingInput
 from chao.indicators import INDICATORS
 
 # Output variables every strategy formula must define (TDX identifiers).

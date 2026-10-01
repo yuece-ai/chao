@@ -2,43 +2,12 @@
 from pathlib import Path
 import numpy as np
 import pandas as pd
+from chao.market import MissingInput
 
 DTYPE = np.dtype([
     ('date', '<u4'), ('open', '<u4'), ('high', '<u4'), ('low', '<u4'),
     ('close', '<u4'), ('amount', '<f4'), ('volume', '<u4'), ('reserved', '<u4'),
 ])
-
-class MissingInput(ValueError):
-    pass
-
-
-# Index symbols used by the formulas.  000688 is both a Shenzhen stock and
-# the Shanghai STAR 50 index, so indices are always spelled out in full.
-INDEX_SYMBOLS = {'999999': 'SH999999', '399001': 'SZ399001', '399006': 'SZ399006',
-                 '000688': 'SH000688', '899050': 'BJ899050'}
-
-
-def equity_symbol(code):
-    """Exchange-qualified symbol for a six-digit A-share stock code."""
-    if code.startswith('6'):
-        return 'SH' + code
-    if code.startswith(('0', '3')):
-        return 'SZ' + code
-    if code.startswith(('43', '83', '87', '92')):
-        return 'BJ' + code
-    raise ValueError(f'cannot infer exchange for stock code {code!r}')
-
-
-def board_index(symbol):
-    """Index code TDX binds to INDEXC for a stock's board."""
-    if symbol.startswith('BJ'):
-        return '899050'
-    if symbol.startswith(('SH688', 'SH689')):
-        return '000688'
-    if symbol.startswith(('SZ300', 'SZ301', 'SZ302')):
-        return '399006'
-    return '399001' if symbol.startswith('SZ') else '999999'
-
 
 def read_day(path):
     path = Path(path)
@@ -75,12 +44,9 @@ def equity_files(root):
                 yield path.stem.upper(), path
 
 
-def load_prices(config, symbol):
-    frame = read_day(symbol_path(config['raw_root'], symbol))
-    root = config.get('qfq_root')
-    if not root:
-        raise MissingInput('qfq_root is required')
-    qpath = Path(root) / f'{symbol}.csv'
+def load_prices(raw_root, qfq_root, symbol):
+    frame = read_day(symbol_path(raw_root, symbol))
+    qpath = Path(qfq_root) / f'{symbol}.csv'
     if not qpath.exists():
         raise MissingInput(f'Missing exchange-qualified adjusted prices: {qpath}')
     qfq = pd.read_csv(qpath, parse_dates=['date']).set_index('date')
