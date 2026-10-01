@@ -50,12 +50,29 @@ def ex_rights(records, as_of):
     return sorted(events, key=lambda e: e.date)
 
 
-def _round_cents(cents, a, b):
-    """Round (cents/100)*a + b to cents, half away from zero, exactly."""
+def _round_cents_exact(cents, a, b):
+    """Round (cents/100)*a + b to cents, half away from zero, in exact rationals."""
     num = [c * a.numerator * b.denominator + 100 * b.numerator * a.denominator for c in cents.tolist()]
     den = a.denominator * b.denominator
     return np.array([(1 if n >= 0 else -1) * ((2 * abs(n) + den) // (2 * den)) for n in num],
                     dtype=np.int64)
+
+
+# Double precision is off by far less than this many cents for any price, so
+# only values this close to a half cent need the exact rational path.
+HALF_CENT_MARGIN = 1e-6
+
+
+def _round_cents(cents, a, b):
+    """Same result as _round_cents_exact; floats decide every value that is
+    not within HALF_CENT_MARGIN of a half cent."""
+    value = cents * float(a) + 100 * float(b)
+    magnitude = np.abs(value)
+    rounded = (np.sign(value) * np.floor(magnitude + 0.5)).astype(np.int64)
+    near = np.abs(magnitude - np.floor(magnitude) - 0.5) < HALF_CENT_MARGIN
+    if near.any():
+        rounded[near] = _round_cents_exact(cents[near], a, b)
+    return rounded
 
 
 def forward_adjust(raw, events):
