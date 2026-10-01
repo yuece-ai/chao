@@ -119,7 +119,7 @@ for d in 2026-09-30 2026-09-25 2026-09-14; do
     --gbbq /home/fikgol/data/tdx/gbbq.json --as-of $d \
     --out /home/fikgol/data/tdx/qfq/asof-$d
 done
-PYTHONPATH=. nix develop --command python run_replay.py --config config.json --reference-only --workers 48
+PYTHONPATH=. nix develop --command python run_replay.py --config config.json --reference-only
 PYTHONPATH=. nix develop --command python scripts/trace_mismatches.py --config config.json \
   --reports reports/parity/replay-report.json --out reports/parity/mismatch-trace.json
 PYTHONPATH=. nix develop --command python scripts/audit_residuals.py \

@@ -62,7 +62,7 @@ nix flake check --no-build
 
 ```sh
 PYTHONPATH=. nix develop --command python run_replay.py \
-  --config config.json --reference-only --workers 48
+  --config config.json --reference-only
 ```
 
 查看逐条差异：

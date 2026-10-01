@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Replay the seven TDX formulas on local TDX bars and score them against
 the TDX exports in origin/.  This runner never places orders."""
-import argparse, json, os
+import argparse, json, os, sys
+from collections import namedtuple
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 import pandas as pd
@@ -12,22 +13,38 @@ from chao.formulas import load_strategies, signals
 from chao.gbbq import load_gbbq, total_shares
 from chao.replay import ReplaySpec, replay
 from chao.reference import read_references, score
+from chao.settings import REQUIRED, ConfigError, Field, describe, id_list, integer, load, number, path_map, text
 
 MIN_BARS = 260
 G = {}
 
+FIELDS = [
+    Field('raw_root', text, REQUIRED, 'TDX vipdoc directory with unadjusted daily bars'),
+    Field('qfq_root', text, REQUIRED, 'forward-adjusted bars built by scripts/build_qfq.py'),
+    Field('qfq_root_by_strategy', path_map, {}, 'per-strategy snapshot roots, e.g. 2=/path'),
+    Field('gbbq_path', text, REQUIRED, 'TDX GBBQ records as JSON'),
+    Field('reference_root', text, REQUIRED, 'directory with the TDX signal exports'),
+    Field('report_dir', text, REQUIRED, 'output directory for events and the report'),
+    Field('start', text, REQUIRED, 'first replay date, YYYY-MM-DD'),
+    Field('end', text, REQUIRED, 'last replay date, YYYY-MM-DD'),
+    Field('initial_cash', number, REQUIRED, 'cash per stock'),
+    Field('buy_fee_rate', number, REQUIRED, 'fee rate on buy amount'),
+    Field('sell_fee_rate', number, REQUIRED, 'fee rate on sell amount'),
+    Field('strategies', id_list, (1, 2, 3, 4, 5, 6, 7), 'strategy ids to replay'),
+    Field('workers', integer, 1, 'worker processes'),
+]
+ReplaySettings = namedtuple('ReplaySettings', [f.key for f in FIELDS])
 
-def strategy_config(config, sid):
+
+def strategy_config(settings, sid):
     """Each TDX export carries its own adjustment snapshot (see PARITY.md)."""
-    root = config.get('qfq_root_by_strategy', {}).get(str(sid))
-    return {**config, 'qfq_root': root} if root else config
+    return {'raw_root': settings.raw_root,
+            'qfq_root': settings.qfq_root_by_strategy.get(sid, settings.qfq_root)}
 
 
-def replay_spec(config):
-    return ReplaySpec(start=config['start'], end=config['end'],
-                      initial_cash=float(config['initial_cash']),
-                      buy_fee_rate=float(config['buy_fee_rate']),
-                      sell_fee_rate=float(config['sell_fee_rate']))
+def replay_spec(settings):
+    return ReplaySpec(start=settings.start, end=settings.end, initial_cash=settings.initial_cash,
+                      buy_fee_rate=settings.buy_fee_rate, sell_fee_rate=settings.sell_fee_rate)
 
 
 def indices_for(config):
@@ -47,17 +64,17 @@ def share_capital(code, index):
     return series.reindex(index, method='ffill').fillna(0.0) * 10000.0
 
 
-def init_worker(config, names):
-    G.update(config=config, names=names, strategies=load_strategies(strategy_files()),
-             spec=replay_spec(config), indices={})
-    G['gbbq'] = load_gbbq(config['gbbq_path'])
+def init_worker(settings, names):
+    G.update(settings=settings, names=names, strategies=load_strategies(strategy_files()),
+             spec=replay_spec(settings), indices={})
+    G['gbbq'] = load_gbbq(settings.gbbq_path)
 
 
 def task(item):
     sid, symbol = item
     code = symbol[2:]
     try:
-        config = strategy_config(G['config'], sid)
+        config = strategy_config(G['settings'], sid)
         frame = load_prices(config, symbol)
         if len(frame) < MIN_BARS:
             return sid, code, [], {'error': 'insufficient history'}
@@ -75,32 +92,41 @@ def task(item):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--config', default='config.json')
+    ap.add_argument('--set', action='append', default=[], metavar='KEY=VALUE',
+                    help='override a setting; takes precedence over the config file')
+    ap.add_argument('--show-config', action='store_true', help='print settings with origins and exit')
     ap.add_argument('--reference-only', action='store_true')
-    ap.add_argument('--workers', type=int)
     ap.add_argument('--limit', type=int)
-    ap.add_argument('--strategies', default='1,2,3,4,5,6,7')
     args = ap.parse_args()
-    cfg = json.loads(Path(args.config).read_text())
-    refs = read_references(cfg['reference_root'])
+    flags = dict(item.split('=', 1) for item in args.set)
+    try:
+        loaded = load(FIELDS, [('--set', flags), (args.config, json.loads(Path(args.config).read_text()))])
+    except ConfigError as exc:
+        sys.exit('run_replay: {}'.format(exc))
+    if args.show_config:
+        print('\n'.join(describe(loaded)))
+        return
+    settings = ReplaySettings(**loaded.values)
+    refs = read_references(settings.reference_root)
     names = {r['code']: r['name'] for rows in refs.values() for r in rows}
     if args.reference_only:
         symbols = sorted({equity_symbol(r['code']) for rows in refs.values() for r in rows})
     else:
-        symbols = sorted(symbol for symbol, _ in equity_files(cfg['raw_root']))
+        symbols = sorted(symbol for symbol, _ in equity_files(settings.raw_root))
     if args.limit:
         symbols = symbols[:args.limit]
-    selected = sorted(int(x) for x in args.strategies.split(',') if x)
+    selected = sorted(settings.strategies)
     # Strategy 7 is the Beijing exchange strategy; 1-6 cover SH and SZ.
     jobs = [(sid, s) for sid in selected for s in symbols if (sid == 7) == s.startswith('BJ')]
-    workers = max(1, min(args.workers or int(cfg.get('workers') or 1), os.cpu_count() or 1))
+    workers = max(1, min(settings.workers, os.cpu_count() or 1))
     actual = {sid: [] for sid in range(1, 8)}; errors = []
-    with ProcessPoolExecutor(max_workers=workers, initializer=init_worker, initargs=(cfg, names)) as pool:
+    with ProcessPoolExecutor(max_workers=workers, initializer=init_worker, initargs=(settings, names)) as pool:
         for sid, code, events, summary in pool.map(task, jobs, chunksize=max(1, len(jobs) // (workers * 8))):
             if 'error' in summary:
                 errors.append({'strategy': sid, 'code': code, **summary})
             actual[sid].extend(events)
-    out = Path(cfg['report_dir']); out.mkdir(parents=True, exist_ok=True)
-    report = {'config': cfg, 'workers': workers, 'jobs': len(jobs), 'errors': errors, 'strategies': {}}
+    out = Path(settings.report_dir); out.mkdir(parents=True, exist_ok=True)
+    report = {'settings': describe(loaded), 'workers': workers, 'jobs': len(jobs), 'errors': errors, 'strategies': {}}
     for sid in range(1, 8):
         actual[sid].sort(key=lambda x: (x['date'], x['code'], x['direction']))
         report['strategies'][str(sid)] = {'events': len(actual[sid]),
