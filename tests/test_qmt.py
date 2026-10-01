@@ -320,3 +320,9 @@ def test_startup_probe_shows_an_unexpected_shape():
 def test_price_margin_must_stay_inside_the_price_cage():
     with pytest.raises(ConfigError, match='price_margin must be in'):
         entry.build_run(FakeContextInfo({}), FakeAccount().namespace(price_margin=0.03))
+
+
+def test_daily_share_rows_collapse_to_changes():
+    from chao.qmt_source import share_steps
+    daily = pd.Series([1e9, 1e9, 1e9, 2e9, 2e9], index=['20200101', '20200102', '20200103', '20200106', '20200107'])
+    assert share_steps(daily) == {'2020-01-01': 1e9, '2020-01-06': 2e9}

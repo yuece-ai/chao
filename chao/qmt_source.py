@@ -128,6 +128,17 @@ def first_price(levels):
     return None
 
 
+def share_steps(column):
+    """{YYYY-MM-DD: shares} at each change of a date-indexed share series."""
+    steps, previous = {}, None
+    for key, value in column.items():
+        value = float(value)
+        if value != previous:
+            steps[qmt_date(key).strftime('%Y-%m-%d')] = value
+            previous = value
+    return steps
+
+
 class QmtMarket(MarketData):
     def __init__(self, context_info, sectors, history_bars, end_time):
         self.C = context_info          # rebound by the entry on every QMT call
@@ -257,7 +268,8 @@ class QmtMarket(MarketData):
 
     def total_shares(self, symbol):
         """Total-share history: one stock over a date range is a DataFrame
-        indexed by date with one column per field (shares)."""
+        indexed by date with one column per field (shares). QMT returns a
+        row per day; only the days the value changes are kept."""
         if symbol not in self._shares:
             table = self.C.get_financial_data([TOTAL_CAPITAL], [to_qmt(symbol)], '19900101', '20991231',
                                               report_type='announce_time')
@@ -267,7 +279,7 @@ class QmtMarket(MarketData):
                 column = pd.Series(dtype=float)
             else:
                 raise MissingInput('unexpected get_financial_data result {!r}'.format(type(table)))
-            self._shares[symbol] = {qmt_date(k).strftime('%Y-%m-%d'): float(v) for k, v in column.items()}
+            self._shares[symbol] = share_steps(column)
         return self._shares[symbol]
 
 
@@ -312,6 +324,10 @@ def probe(C, sectors, end_time, live, clock):
     expect(isinstance(table, pd.DataFrame) and table.shape[1] == 1 and not table.empty, 'get_financial_data',
            table, 'a one-column DataFrame indexed by date')
     qmt_date(table.index[-1])
+    known = table.iloc[:, 0].dropna()
+    lines.append('probe total shares {}: {} on {}, {} changes (shares; 600000.SH is about 2.9e10)'.format(
+        PROBE_STOCK, known.iloc[-1] if len(known) else None, known.index[-1] if len(known) else None,
+        len(share_steps(known))))
     read = getattr(C, 'get_instrument_detail', None) or C.get_instrumentdetail
     detail = read(PROBE_STOCK)
     seen('get_instrument_detail', detail)
