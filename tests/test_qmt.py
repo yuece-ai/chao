@@ -248,7 +248,7 @@ def test_live_does_not_trade_on_a_day_without_its_bar(test_strategy, monkeypatch
     account = FakeAccount(cash=100000.0)
     log = run_handlebar(C, account, account_id='A1')
     assert log[-1] == 'chao: the main chart has no bar for 2021-02-27 (last 2021-02-23); not trading yet'
-    assert account.orders == [] and C.calls == []
+    assert account.orders == [] and C.calls == [('get_full_tick', 1)]  # only the startup unit check
 
 
 def test_live_sends_nothing_after_the_close(test_strategy, monkeypatch, tmp_path):
@@ -379,3 +379,16 @@ def test_mode_can_be_forced(test_strategy):
         entry.handlebar(C)
     assert entry.RUN.backtest and C.capital == entry.BACKTEST_CAPITAL
 
+
+
+def test_tick_amount_unit_is_read_from_the_tick():
+    from chao.qmt_source import tick_amount_unit, with_tick
+    # 600000.SH on 2026-09-30 as the client reported it: 1.386e9 yuan traded, amount says 1.386e11.
+    seen = {'timetag': '20260930 15:30:07', 'lastPrice': 9.48, 'open': 9.22, 'high': 9.49, 'low': 9.16,
+            'amount': 138620993700.0, 'pvolume': 147484820}
+    assert tick_amount_unit(seen) == 100
+    assert tick_amount_unit(dict(seen, amount=1386209937.0)) == 1
+    with pytest.raises(ValueError, match='is no price within'):
+        tick_amount_unit(dict(seen, amount=1e6))
+    bar = with_tick(None, seen, pd.Timestamp('2026-09-30'), 100)
+    assert bar['amount'].tolist() == [1386209937.0]

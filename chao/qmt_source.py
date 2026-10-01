@@ -94,6 +94,7 @@ def name_text(value):
 
 
 TICK_FIELDS = {'open': 'open', 'high': 'high', 'low': 'low', 'close': 'lastPrice', 'amount': 'amount'}
+TICK_AMOUNT_UNITS = (1, 100)  # tick amount per yuan: as documented, and as the client reported
 
 
 def tick_date(tick):
@@ -104,12 +105,27 @@ def tick_date(tick):
     return qmt_date(stamp) if stamp else None
 
 
-def with_tick(frame, tick, day):
+def tick_amount_unit(tick):
+    """How many tick 'amount' units make one yuan, read from the tick
+    itself: amount / shares traded is the average price, which lies between
+    the day's low and high. The client was seen to report 100x yuan."""
+    shares, amount = float(tick.get('pvolume') or 0), float(tick.get('amount') or 0)
+    if shares > 0:
+        for unit in TICK_AMOUNT_UNITS:
+            average = amount / unit / shares
+            if float(tick['low']) * 0.99 <= average <= float(tick['high']) * 1.01:
+                return unit
+    raise MissingInput('get_full_tick amount {} over pvolume {} is no price within low {} and high {} for any '
+                       'unit in {}'.format(amount, shares, tick.get('low'), tick.get('high'), TICK_AMOUNT_UNITS))
+
+
+def with_tick(frame, tick, day, amount_unit=1):
     """frame with today's bar set from a get_full_tick tick, if the tick is
-    from today and has traded; otherwise frame unchanged (None stays None)."""
+    from today and has traded; otherwise frame unchanged (None stays None).
+    The amount is divided by amount_unit to give yuan, as in daily bars."""
     if not tick or float(tick.get('lastPrice') or 0) <= 0 or tick_date(tick) != day:
         return frame
-    row = np.array([[float(tick[TICK_FIELDS[k]]) for k in BAR_FIELDS]])
+    row = np.array([[float(tick[TICK_FIELDS[k]]) / (amount_unit if k == 'amount' else 1) for k in BAR_FIELDS]])
     if frame is None:
         return pd.DataFrame(row, index=pd.DatetimeIndex([day]), columns=BAR_FIELDS)
     keep = frame.index < day
@@ -142,6 +158,7 @@ class QmtMarket(MarketData):
         self._index_closes = None
         self._prepared, self._prepared_index = {}, {}   # live: adjusted history, index bars
         self._today = None             # live: {symbol: prepared history + today's bar}
+        self.tick_amount_unit = None   # live: set from the startup probe's tick
 
     def reset_static(self):
         self._events, self._shares, self._details = {}, {}, {}
@@ -244,7 +261,7 @@ class QmtMarket(MarketData):
         day = pd.Timestamp(today)
         codes = [to_qmt(s) for s in symbols] + [QMT_INDEX[c] for c in sorted(self._prepared_index)]
         ticks = self.C.get_full_tick(codes) or {}
-        self._today = {s: with_tick(self._prepared[s], ticks.get(to_qmt(s)), day)
+        self._today = {s: with_tick(self._prepared[s], ticks.get(to_qmt(s)), day, self.tick_amount_unit)
                        for s in symbols if s in self._prepared}
         self._index_closes = {code: with_tick(frame, ticks.get(QMT_INDEX[code]), day)['close']
                               for code, frame in self._prepared_index.items()}

@@ -41,7 +41,7 @@ from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.market import Context, MissingInput
 from chao.orders import CAGE_RATE, Order, limit_price, plan_orders
-from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date
+from chao.qmt_source import ALL_BARS, HISTORY_BARS, PROBE_STOCK, QmtMarket, probe, qmt_date, tick_amount_unit
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, number, text
 from chao.replay import BUY, ReplaySpec, replay
@@ -203,6 +203,7 @@ def build_run(C, namespace):
     run = Run(context, qmt_api(namespace), ledger, backtest)
     if not backtest:
         run.download = qmt_function(namespace, 'download_history_data')
+        market.tick_amount_unit = tick_amount_unit(C.get_full_tick([PROBE_STOCK])[PROBE_STOCK])
     return run, lines
 
 
@@ -463,6 +464,8 @@ def start(C):
     market = run.context.market
     for line in probe(C, market.sectors, market.end_time, not run.backtest, now().strftime('%Y-%m-%d %H:%M:%S')):
         print('chao: ' + line)
+    if not run.backtest:
+        print('chao: tick amount: {} units per yuan'.format(market.tick_amount_unit))
     RUN = run
 
 

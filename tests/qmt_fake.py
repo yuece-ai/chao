@@ -24,7 +24,8 @@ class FakeContextInfo:
         self.shares.setdefault('600000.SH', pd.Series([2.93e10], index=['20200101']))
         self.names.setdefault('600000.SH', '浦发银行')
         self.ticks.setdefault('600000.SH', {'timetag': '20210223 14:56:00', 'lastPrice': 10.0, 'open': 10.0,
-                                            'high': 10.0, 'low': 10.0, 'amount': 1e8, 'askPrice': [10.01],
+                                            'high': 10.0, 'low': 10.0, 'amount': 1e8, 'pvolume': 1e7,
+                                            'askPrice': [10.01],
                                             'bidPrice': [10.0]})
         self.calls = []                   # (function, number of codes) per data call
         self.bar_dates = list(bar_dates)  # one 'YYYYMMDD' per bar position
