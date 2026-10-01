@@ -4,7 +4,7 @@ import pandas as pd
 
 class FakeContextInfo:
     def __init__(self, bars, divid=None, names=None, shares=None, sectors=None, last_bar=True,
-                 backtest=False, bar_dates=('20210223',), start='2020-01-01 00:00:00',
+                 backtest=False, bar_dates=('20210222', '20210223'), start='2020-01-01 00:00:00',
                  end='2021-02-23 15:00:00', ticks=None, limits=None):
         self.bars = bars            # {qmt code: DataFrame indexed by 'YYYYMMDD'}
         self.divid = divid or {}    # {qmt code: {'YYYYMMDD': [7 per-share values]}}
@@ -79,7 +79,7 @@ class FakeAccount:
     """passorder/get_trade_detail_data stand-ins; records every order."""
 
     def __init__(self, cash=1e6, positions=()):
-        self.cash, self.positions, self.orders = cash, list(positions), []
+        self.cash, self.positions, self.orders, self.downloads = cash, list(positions), [], []
 
     def get_trade_detail_data(self, account_id, account_type, kind, strategy_name=None):
         assert account_type == 'STOCK'
@@ -94,8 +94,12 @@ class FakeAccount:
     def passorder(self, op, order_type, account_id, code, pr_type, price, volume, name, quick, remark, C):
         self.orders.append((op, order_type, account_id, code, pr_type, price, volume, name, quick, remark))
 
+    def download_history_data(self, code, period, start, end):
+        self.downloads.append((code, period, start, end))
+
     def namespace(self, **gui):
-        return dict(gui, passorder=self.passorder, get_trade_detail_data=self.get_trade_detail_data)
+        return dict(gui, passorder=self.passorder, get_trade_detail_data=self.get_trade_detail_data,
+                    download_history_data=self.download_history_data)
 
 
 def ticks_from(bars, day):

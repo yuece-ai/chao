@@ -7,11 +7,14 @@ forward-adjusted with chao.qfq, the algorithm verified against TDX.
 Call shapes follow the official built-in API docs (dict.thinktrader.net,
 innerApi); anything unexpected raises instead of being guessed at.
 
-Data is read in two layers:
-- per stock, cached for the run and refreshed with reset_static(): ex-rights
-  factors, total-share history and the name;
-- bars, read with prefetch(symbols) in batches; only the current batch is
-  kept, so a full-history backtest does not hold every stock in memory.
+Data is read in layers:
+- per stock, cached for the day and refreshed with reset_static(): ex-rights
+  factors, total-share history, contract details;
+- backtest: bars read with prefetch(symbols) in batches; only the current
+  batch is kept, so a full history does not sit in memory;
+- live: prepare() reads every stock's last HISTORY_BARS local bars (up to
+  yesterday, final for the day) and adjusts them once; load_today() then
+  only appends today's bar from the latest ticks.
 """
 import re
 from decimal import Decimal, ROUND_HALF_UP
@@ -146,8 +149,10 @@ class QmtMarket(MarketData):
         self.history_bars = history_bars
         self.end_time = end_time       # 'YYYYMMDD' in a backtest, '' live
         self.reset_static()
-        self._raw, self._ticks, self._day = {}, {}, None
+        self._raw = {}                 # backtest: unadjusted bars of the current batch
         self._index_closes = None
+        self._prepared, self._prepared_index = {}, {}   # live: adjusted history, index bars
+        self._today = None             # live: {symbol: prepared history + today's bar}
 
     def reset_static(self):
         self._events, self._shares, self._details = {}, {}, {}
@@ -197,23 +202,63 @@ class QmtMarket(MarketData):
             frames[code] = frame
         return frames
 
-    def prefetch(self, symbols, index_codes, today=None):
-        """Read the bars of one batch of stocks and the needed indices in one
-        call. Live (today given), today's bar comes from the latest ticks:
-        subscribe=False reads local data, which ends yesterday intraday."""
+    def prefetch(self, symbols, index_codes):
+        """Backtest: read the bars of one batch of stocks and the needed
+        indices in one call."""
         qmt_index = {code: QMT_INDEX[code] for code in sorted(index_codes)}
         codes = [to_qmt(s) for s in symbols] + list(qmt_index.values())
         frames = self._fetch(codes)
-        self._day = None if today is None else pd.Timestamp(today)
-        self._ticks = {} if today is None else (self.C.get_full_tick(codes) or {})
-        for c in qmt_index.values():
-            frames[c] = with_tick(frames.get(c), self._ticks.get(c), self._day)
-        missing = [c for c in qmt_index.values() if frames[c] is None]
+        missing = [c for c in qmt_index.values() if c not in frames]
         if missing:
             raise MissingInput('no daily bars from QMT for indices {}; download them first'.format(missing))
-        # Stocks get today's tick when first used (see raw_bars).
-        self._raw = {from_qmt(c): frames.get(c) for c in codes if c not in qmt_index.values()}
+        self._raw = {from_qmt(c): f for c, f in frames.items() if c not in qmt_index.values()}
         self._index_closes = {code: frames[c]['close'] for code, c in qmt_index.items()}
+
+    def download_daily(self, symbols, index_codes, download):
+        """Ask QMT to append any missing daily bars to local data. The call is
+        non-blocking; prepare() checks what actually arrived."""
+        for code in [to_qmt(s) for s in symbols] + [QMT_INDEX[c] for c in sorted(index_codes)]:
+            download(code, '1d', '', '')  # an empty start downloads incrementally
+
+    def prepare(self, symbols, index_codes, today, batch):
+        """Live: every stock's local history before today, adjusted with the
+        ex-rights known today, and the index bars. Returns {symbol or index
+        code: last local bar date} for the readiness check."""
+        day = pd.Timestamp(today)
+        self._prepared, self._prepared_index, self._today = {}, {}, None
+        qmt_index = {code: QMT_INDEX[code] for code in sorted(index_codes)}
+        last = {}
+        for i in range(0, len(symbols), batch):
+            part = symbols[i:i + batch]
+            codes = [to_qmt(s) for s in part] + (list(qmt_index.values()) if i == 0 else [])
+            for code, frame in self._fetch(codes).items():
+                frame = frame[frame.index < day]
+                if frame.empty:
+                    continue
+                if code in qmt_index.values():
+                    index = next(k for k, v in qmt_index.items() if v == code)
+                    self._prepared_index[index] = frame
+                    last[index] = frame.index[-1]
+                    continue
+                symbol = from_qmt(code)
+                events = [e for e in self.ex_rights(symbol) if e.date <= day]
+                adjusted = forward_adjust(frame, events)
+                adjusted['amount'] = frame['amount']
+                self._prepared[symbol] = adjusted
+                last[symbol] = frame.index[-1]
+        return last
+
+    def load_today(self, symbols, today):
+        """Live: prepared history plus today's bar from one get_full_tick
+        call, for a batch of stocks and the indices. Today's bar is the
+        unadjusted price, as forward adjustment leaves it."""
+        day = pd.Timestamp(today)
+        codes = [to_qmt(s) for s in symbols] + [QMT_INDEX[c] for c in sorted(self._prepared_index)]
+        ticks = self.C.get_full_tick(codes) or {}
+        self._today = {s: with_tick(self._prepared[s], ticks.get(to_qmt(s)), day)
+                       for s in symbols if s in self._prepared}
+        self._index_closes = {code: with_tick(frame, ticks.get(QMT_INDEX[code]), day)['close']
+                              for code, frame in self._prepared_index.items()}
 
     def universe(self):
         codes = set()
@@ -222,18 +267,14 @@ class QmtMarket(MarketData):
         return sorted(from_qmt(code) for code in codes)
 
     def last_bar_date(self, symbol):
-        try:
-            return self.raw_bars(symbol).index[-1]
-        except MissingInput:
-            return None
+        """Live: date of the last bar loaded for today (None without data)."""
+        frame = (self._today or {}).get(symbol)
+        return None if frame is None else frame.index[-1]
 
     def raw_bars(self, symbol):
-        code = to_qmt(symbol)
-        if code in self._ticks:
-            self._raw[symbol] = with_tick(self._raw.get(symbol), self._ticks.pop(code), self._day)
         raw = self._raw.get(symbol)
         if raw is None or raw.empty:
-            raise MissingInput('no daily bars from QMT for {}'.format(code))
+            raise MissingInput('no daily bars from QMT for {}'.format(to_qmt(symbol)))
         return raw
 
     def load_static(self, symbol):
@@ -250,6 +291,11 @@ class QmtMarket(MarketData):
         return self._events[symbol]
 
     def bars(self, symbol):
+        if self._today is not None:
+            frame = self._today.get(symbol)
+            if frame is None:
+                raise MissingInput('no local daily bars for {}'.format(to_qmt(symbol)))
+            return frame
         raw = self.raw_bars(symbol)
         if symbol not in self._events:
             self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})

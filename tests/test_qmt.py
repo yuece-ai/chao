@@ -77,7 +77,7 @@ def test_main_chart_must_be_daily():
 
 
 def market_with(closes):
-    return dict(INDEX_BARS, **{'000001.SZ': daily(closes), '000002.SZ': daily([10.0] * 10)})
+    return dict(INDEX_BARS, **{'000001.SZ': daily(closes), '000002.SZ': daily([10.0] * 10, start='2021-02-10')})
 
 
 def run_handlebar(C, account, **gui):
@@ -90,7 +90,7 @@ def run_handlebar(C, account, **gui):
 @pytest.fixture
 def test_strategy(monkeypatch):
     monkeypatch.setattr(entry, 'strategy_files', lambda: TEST_STRATEGY)
-    monkeypatch.setattr(entry, 'CONFIG', {'sectors': 'A', 'strategies': '1', 'signal_time': '00:00',
+    monkeypatch.setattr(entry, 'CONFIG', {'sectors': 'A', 'strategies': '1', 'prepare_time': '00:00', 'signal_time': '00:00',
                                           'order_time': '00:00', 'buy_time': '00:00'})
     monkeypatch.setattr(entry, 'now', lambda: datetime.datetime(2021, 2, 23, 14, 58))
 
@@ -205,17 +205,19 @@ def test_live_takes_todays_bar_from_ticks(test_strategy):
     assert 'chao: signal 2021-02-23 strategy=1 SZ000001 buy' in log
     assert 'chao: order 2021-02-23 buy SZ000001 4400 strategy=1 limit=11.17 (dry-run)' in log
     # 000002 has no tick today (suspended): it gets no bar for today and is counted.
-    assert any(' 1 without a bar today ' in line for line in log)
+    assert any(' 1 without a tick today ' in line for line in log)
 
 
 def test_live_stops_when_indices_have_no_bar_today(test_strategy):
     bars = market_with([10.0] * 299 + [11.0])
     yesterday = {code: frame.iloc[:-1] for code, frame in bars.items()}
     C = FakeContextInfo(yesterday, names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
-    account = FakeAccount()
-    with pytest.raises(ValueError, match='indices without a bar for 2021-02-23'):
-        run_handlebar(C, account, account_id='A1')
+    account = FakeAccount(cash=100000.0)
+    log = run_handlebar(C, account, account_id='A1')
+    assert any(line.startswith('chao: error in live_signals: MissingInput: indices without a tick for 2021-02-23')
+               for line in log)
     entry.handlebar(C)  # the next tick does not retry the failed day
+    assert not any(line.startswith('chao: order') for line in log)
     assert C.calls.count(('get_full_tick', 5)) == 1
 
 
@@ -295,6 +297,28 @@ def test_a_pending_sell_is_retried_without_a_new_signal(test_strategy, tmp_path)
     path = ledger_with(tmp_path, {'SZ000001': {'strategy': 1, 'selling': True}})
     run_handlebar(C, account, account_id='A1', dry_run=0, ledger_path=path)
     assert [(o[0], o[6]) for o in account.orders] == [(24, 1000)]
+
+
+def test_live_without_ready_data_only_sends_pending_sells(test_strategy, tmp_path):
+    # The local index bars stop two days back: no new buys today, the pending sell still goes out.
+    bars = market_with([10.0] * 299 + [11.0])
+    stale = dict(bars, **{code: bars[code].iloc[:-2] for code in QMT_INDEX.values()})
+    C = FakeContextInfo(stale, ticks=ticks_from(bars, LAST), names={'000001.SZ': 'X', '000002.SZ': 'Y'},
+                        sectors={'A': ['000001.SZ', '000002.SZ']})
+    account = FakeAccount(cash=100000.0, positions=[Obj(symbol='SZ000002', volume=500, sellable=500, value=5000.0)])
+    path = ledger_with(tmp_path, {'SZ000002': {'strategy': 1, 'selling': True}})
+    log = run_handlebar(C, account, account_id='A1', dry_run=0, ledger_path=path)
+    assert 'chao: data not ready for 2021-02-23; no new trades today, pending sells still go out' in log
+    assert [(o[0], o[3], o[6]) for o in account.orders] == [(24, '000002.SZ', 500)]
+
+
+def test_live_requests_the_daily_download_on_the_first_tick(test_strategy):
+    C = live([10.0] * 300, names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
+    account = FakeAccount()
+    run_handlebar(C, account)
+    entry.handlebar(C)
+    indices = [QMT_INDEX[code] for code in sorted(entry.RUN.index_codes)]
+    assert indices and account.downloads == [(code, '1d', '', '') for code in ['000001.SZ'] + indices]  # once
 
 
 def test_only_the_buying_strategy_sells(test_strategy, tmp_path, monkeypatch):

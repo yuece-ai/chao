@@ -12,13 +12,21 @@ back attributes set on ContextInfo between handlebar calls.
   written in the TDX export layout to report_path, and each bar sends the
   same trades (date, side, shares) to passorder, so QMT's own backtest
   report shows them too.
-- Live, on the last bar of a day whose bar is today's calendar date:
-  per-stock static data is read on the first tick; at signal_time today's
-  signals are computed (the slow part); at order_time the pending sells are
-  sent; at buy_time the buys are sized from the cash actually available
-  (sale proceeds included once the sells have filled) and sent. All orders
-  are limit orders price_margin through the last price, or only printed
-  while dry_run is on (the default). Nothing is sent from MARKET_CLOSE on.
+- Live, on the last bar of a day whose bar is today's calendar date. The
+  strategy stays running in 模型交易; each day it steps through:
+  first tick: request the missing daily bars (incremental, non-blocking)
+              and read per-stock static data;
+  prepare_time (14:30): check the local bars reach the previous trading
+              day, then read and adjust every stock's history once;
+  signal_time (14:56): append today's bar from the latest ticks and
+              compute the signals;
+  order_time: send the pending sells; buy_time: send the buys, sized from
+              the cash then available.
+  When the data is not ready by signal_time, no new trade is made that day;
+  sells already pending still go out. A failing step is logged and never
+  stops the strategy. Orders are limit orders price_margin through the last
+  price, or only printed while dry_run is on (the default). Nothing is sent
+  from MARKET_CLOSE on.
 
 Settings precedence: GUI parameter > the account selected in QMT (the
 injected `account` variable) > CONFIG below > field default. QMT's parameter
@@ -49,6 +57,9 @@ BATCH_LIVE, BATCH_BACKTEST = 200, 25
 # its own tdx_cash, can be filled at once in one account.
 BACKTEST_CAPITAL = 1e12
 MARKET_CLOSE = '15:00:00'
+# Live readiness: at most this share of stocks may lack the previous trading
+# day's bar (suspensions); more means the local download is incomplete.
+STALE_LIMIT = 0.10
 # Days of history wanted before a backtest's start: MA(250) plus REF lookback.
 WARMUP_DAYS = 400
 # First trading day of each formula index: an index cannot have older bars.
@@ -95,7 +106,8 @@ FIELDS = [
     Field('account_id', text, '', 'stock account; defaults to the account selected in QMT'),
     Field('dry_run', boolean, True, 'live only: print orders instead of placing them'),
     Field('max_positions', integer, 10, 'most stocks held at once; each buy is 1/N of total assets'),
-    Field('signal_time', clock, '14:56:00', 'live only: when to compute the day\'s signals (~25 s)'),
+    Field('prepare_time', clock, '14:30:00', 'live only: when to check and load the history up to yesterday'),
+    Field('signal_time', clock, '14:56:00', 'live only: when to append today\'s bar and compute the signals'),
     Field('order_time', clock, '14:56:45', 'live only: when to send the sells'),
     Field('buy_time', clock, '14:56:50', 'live only: when to send the buys, after the sells have filled'),
     Field('price_margin', number, 0.015, 'live only: limit price this far through the last price'),
@@ -116,7 +128,9 @@ class Run:
         self.index_codes = sorted(required_indices(context.strategies.values()))
         self.trades = None            # backtest: {date: [Order]} from the TDX replay
         self.universe = None          # live: today's stock list
-        self.static_date = None       # live: day the static data was read
+        self.static_date = None       # live: day the static data was read and the download requested
+        self.prepared = {}            # live: {date: True if the history was ready}
+        self.download = None          # live: QMT's download_history_data
         self.signals = {}             # live: {date: (buys, {symbol: [strategy]})}
         self.sold = set()             # live: dates whose sells were sent
         self.done = set()             # live: dates fully traded
@@ -135,13 +149,15 @@ def qmt_account(namespace):
     return {'account_id': account} if account else {}
 
 
+def qmt_function(namespace, name):
+    found = namespace.get(name, getattr(builtins, name, None))
+    if found is None:
+        raise RuntimeError('QMT function {} is not available'.format(name))
+    return found
+
+
 def qmt_api(namespace):
-    def lookup(name):
-        found = namespace.get(name, getattr(builtins, name, None))
-        if found is None:
-            raise RuntimeError('QMT function {} is not available'.format(name))
-        return found
-    return QmtApi(lookup('passorder'), lookup('get_trade_detail_data'))
+    return QmtApi(qmt_function(namespace, 'passorder'), qmt_function(namespace, 'get_trade_detail_data'))
 
 
 def check(settings, C, backtest):
@@ -154,8 +170,8 @@ def check(settings, C, backtest):
         raise ConfigError('account_id is required to trade or backtest')
     if not 0 < settings.price_margin <= CAGE_RATE:
         raise ConfigError('price_margin must be in (0, {}]: the price cage rejects orders beyond it'.format(CAGE_RATE))
-    if not settings.signal_time <= settings.order_time <= settings.buy_time < MARKET_CLOSE:
-        raise ConfigError('need signal_time <= order_time <= buy_time < {}'.format(MARKET_CLOSE))
+    if not settings.prepare_time <= settings.signal_time <= settings.order_time <= settings.buy_time < MARKET_CLOSE:
+        raise ConfigError('need prepare_time <= signal_time <= order_time <= buy_time < {}'.format(MARKET_CLOSE))
     if not backtest and not settings.dry_run and not settings.ledger_path:
         raise ConfigError('ledger_path is required for live orders, so manual holdings are never sold')
 
@@ -184,7 +200,10 @@ def build_run(C, namespace):
                        backtest_end(C) if backtest else '')
     context = Context(settings, market, {sid: selected[sid] for sid in settings.strategies})
     ledger = Ledger('' if backtest else settings.ledger_path)
-    return Run(context, qmt_api(namespace), ledger, backtest), lines
+    run = Run(context, qmt_api(namespace), ledger, backtest)
+    if not backtest:
+        run.download = qmt_function(namespace, 'download_history_data')
+    return run, lines
 
 
 def batches(items, size):
@@ -323,7 +342,8 @@ def backtest_bar(C, run, date):
 
 
 def refresh_static(run, date):
-    """First tick of a live day: today's universe and per-stock static data."""
+    """First tick of a live day: today's universe, per-stock static data, and
+    a request for the daily bars still missing locally."""
     started = time.time()
     market = run.context.market
     run.static_date = date  # before reading: a failure is reported once, not on every tick
@@ -334,20 +354,42 @@ def refresh_static(run, date):
             market.load_static(symbol)
         except MissingInput:
             pass  # reported by the signal scan, which needs the same data
-    print('chao: static data for {} stocks read in {:.0f}s'.format(len(run.universe), time.time() - started))
+    market.download_daily(run.universe, run.index_codes, run.download)
+    print('chao: static data for {} stocks read and daily bars requested in {:.0f}s'.format(
+        len(run.universe), time.time() - started))
+
+
+def prepare_day(C, run, date):
+    """Load the history up to yesterday once; ready when the indices and all
+    but STALE_LIMIT of the stocks reach the previous trading day."""
+    started = time.time()
+    market = run.context.market
+    previous = qmt_date(C.get_bar_timetag(C.barpos - 1))
+    last = market.prepare(run.universe, run.index_codes, date, BATCH_LIVE)
+    behind_indices = sorted(code for code in run.index_codes if last.get(code) != previous)
+    stocks = [last[s] for s in run.universe if s in last]
+    behind_stocks = sum(1 for d in stocks if d < previous)
+    ready = not behind_indices and behind_stocks <= STALE_LIMIT * len(stocks)
+    run.prepared[date] = ready
+    print('chao: history up to {} loaded for {} stocks in {:.0f}s; {} stop earlier, {} have no local bars; '
+          'indices behind: {}'.format(previous.date(), len(stocks), time.time() - started, behind_stocks,
+                                      len(run.universe) - len(stocks), behind_indices or 'none'))
+    if not ready:
+        print('chao: warning: local daily bars are incomplete; downloading again and checking at signal_time')
+        market.download_daily(run.universe, run.index_codes, run.download)
 
 
 def live_signals(run, date):
-    """Today's last-bar signals for the whole universe, read in batches."""
+    """Today's last-bar signals: prepared history plus today's ticks."""
     started = time.time()
     market = run.context.market
-    found, errors, stale = [], [], 0
+    found, errors, without_tick = [], [], 0
     for batch in batches(run.universe, BATCH_LIVE):
-        market.prefetch(batch, run.index_codes, today=date)
-        behind = {code: c.index[-1] for code, c in market.index_closes().items() if c.index[-1] != pd.Timestamp(date)}
+        market.load_today(batch, date)
+        behind = sorted(code for code, c in market.index_closes().items() if c.index[-1] != pd.Timestamp(date))
         if behind:
-            raise MissingInput('indices without a bar for {}: {}'.format(date, sorted(behind)))
-        stale += sum(1 for s in batch if market.last_bar_date(s) != pd.Timestamp(date))
+            raise MissingInput('indices without a tick for {}: {}'.format(date, behind))
+        without_tick += sum(1 for s in batch if market.last_bar_date(s) != pd.Timestamp(date))
         rows, bad = last_bar_signals(run.context, batch)
         found += [r for r in rows if r[0] == date]
         errors += bad
@@ -357,8 +399,18 @@ def live_signals(run, date):
         if side == 'sell':
             sells.setdefault(symbol, []).append(sid)
     run.signals[date] = ([(sid, symbol, side) for _, sid, symbol, side in found if side == 'buy'], sells)
-    print('chao: {} signals, {} skipped, {} without a bar today (suspended or no tick), {:.0f}s'.format(
-        len(found), len(errors), stale, time.time() - started))
+    print('chao: {} signals, {} skipped, {} without a tick today (suspended), {:.0f}s'.format(
+        len(found), len(errors), without_tick, time.time() - started))
+
+
+def guarded(step, *args):
+    """Run one live step; log a failure instead of stopping the strategy."""
+    try:
+        step(*args)
+        return True
+    except Exception as exc:  # the strategy must survive to trade pending sells and later days
+        print('chao: error in {}: {}: {}'.format(step.__name__, type(exc).__name__, exc))
+        return False
 
 
 def now():
@@ -454,10 +506,18 @@ def live_tick(C, run):
         print('chao: {} started after {}; no orders today'.format(today, MARKET_CLOSE))
         return
     if run.static_date != today:
-        refresh_static(run, today)
+        guarded(refresh_static, run, today)
+    if today not in run.prepared and clock_now >= settings.prepare_time:
+        run.prepared[today] = False  # marked first: a failure is reported once
+        guarded(prepare_day, C, run, today)
     if today not in run.signals and clock_now >= settings.signal_time:
-        run.signals[today] = ([], {})  # a failure below is reported once; pending sells still go out
-        live_signals(run, today)
+        run.signals[today] = ([], {})  # no new trades unless the signals below succeed
+        if not run.prepared.get(today):
+            guarded(prepare_day, C, run, today)  # second and last check
+        if run.prepared.get(today):
+            guarded(live_signals, run, today)
+        else:
+            print('chao: data not ready for {}; no new trades today, pending sells still go out'.format(today))
     if not settings.account_id:
         if today in run.signals:
             run.done.add(today)
@@ -465,7 +525,7 @@ def live_tick(C, run):
         return
     if today in run.signals and today not in run.sold and clock_now >= settings.order_time:
         run.sold.add(today)
-        live_sells(C, run, today)
+        guarded(live_sells, C, run, today)
     if today in run.sold and clock_now >= settings.buy_time:
         run.done.add(today)
-        live_buys(C, run, today)
+        guarded(live_buys, C, run, today)

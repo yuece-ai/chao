@@ -52,7 +52,9 @@ Before running:
 1. Download the data in QMT (数据管理): daily bars for 沪深A股 and the
    indices the enabled strategies read (for strategies 1–6: `000001.SH`,
    `399001.SZ`, `399006.SZ`, `000688.SH`), ex-rights data and financial
-   data. Keep the daily data current; live runs add only today's bar.
+   data. A live run requests the incremental daily download itself each
+   morning; refresh ex-rights and financial data weekly by hand (QMT has no
+   API for them).
 2. Paste `qmt/chao_strategy.py` into a QMT strategy.
 3. Set the main chart to daily (1d); the strategy refuses other periods.
 
@@ -74,14 +76,24 @@ Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
     history to be downloaded.
 - **Live:** only on the last bar, and only when the main chart's last bar is
   today's calendar date (so never on holidays or before the day's first
-  bar), and never at or after 15:00. Four steps a day:
+  bar), and never at or after 15:00. Start the strategy once in 模型交易
+  before 14:30 and leave it running; each day runs these steps:
   1. On the first tick, read the universe and the per-stock static data
-     (ex-rights, total shares, contract details with today's price limits).
-  2. At `signal_time` (14:56:00), compute today's signals; this takes
-     about 25 s.
-  3. At `order_time` (14:56:45), send the sells: pending sells, plus stocks
+     (ex-rights, total shares, contract details with today's price limits),
+     and request the incremental daily download (`download_history_data`
+     with an empty start) for the stocks and the indices.
+  2. At `prepare_time` (14:30:00), load each stock's local daily bars up to
+     yesterday, forward-adjust them with today's known ex-rights and keep
+     them in memory. The data is ready when every index reaches the previous
+     trading day and at most 10% of the stocks stop earlier (suspensions);
+     otherwise the download is requested again.
+  3. At `signal_time` (14:56:00), check readiness once more, append today's
+     bar from one `get_full_tick` call per batch and compute the signals.
+     If the data is still not ready, there are no new trades that day;
+     pending sells still go out.
+  4. At `order_time` (14:56:45), send the sells: pending sells, plus stocks
      whose buying strategy signals a sell today.
-  4. At `buy_time` (14:56:50), read the account again and size the buys
+  5. At `buy_time` (14:56:50), read the account again and size the buys
      from the cash actually available. Sale proceeds count once the sells
      have filled; the broker checks available cash per order, so they are
      not counted in advance.
@@ -93,7 +105,10 @@ Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
   涨停/跌停 prices. Buys are sized at their limit price, which is the cash the broker
   freezes. While `dry_run` is on (the default), orders are only printed.
   Each step is marked as attempted before it runs, so a failure is
-  reported once instead of on every tick.
+  reported once instead of on every tick, and a failing step is logged as
+  `chao: error in <step>` without stopping the strategy. A step whose time
+  has passed runs on the next tick, so after the machine sleeps or the
+  client reconnects the missed steps catch up late, until 15:00.
   - `get_market_data_ex(subscribe=False)` reads local data, which ends
     yesterday during the session. Today's bar therefore comes from one
     `get_full_tick` call per batch: open, high, low, `lastPrice` as the
@@ -191,6 +206,7 @@ here, because its full schema is not documented and could not be checked.
 | `account_id` | the QMT account | required in backtests and for live orders |
 | `dry_run` | `1` | live only: print orders instead of sending them |
 | `max_positions` | `10` | most chao stocks held at once |
+| `prepare_time` | `14:30:00` | live only: when to load and adjust the history up to yesterday |
 | `signal_time` | `14:56:00` | live only: when to compute the day's signals |
 | `order_time` | `14:56:45` | live only: when to send the sells |
 | `buy_time` | `14:56:50` | live only: when to send the buys |
@@ -232,7 +248,8 @@ so QMT's own call latency is not included. The universe is about 5,100
 | Phase | Cost per stock | Whole universe | QMT calls |
 |---|---|---|---|
 | Live, first tick of the day: static data | 0.4 ms + 3 calls | ~2 s + call latency | ~15,000 |
-| Live, signal_time: 400 bars plus today's tick, 6 strategies | 4.7 ms | ~24 s + batch reads | 26 bar reads + 26 tick reads |
+| Live, prepare_time: 400 bars up to yesterday, adjusted | — | bar reads + adjustment, 26 minutes before the signals | 26 bar reads |
+| Live, signal_time: prepared bars plus today's tick, 6 strategies | 4.7 ms | ~24 s | 26 tick reads |
 | Live, order_time: plan and send | — | under 1 s | 2–3 account reads + 1 tick read + one passorder per order |
 | Backtest preparation: full history, signals plus the TDX replay | ~22 ms | ~66 s for the 3,051 reference stocks, ~2 min for 5,100 | 204 bar reads (batches of 25) + static reads |
 | Backtest, per bar | — | under 1 ms | one passorder per mirrored trade |
@@ -265,8 +282,9 @@ Memory:
   records) plus one 25-stock batch.
 
 Is this acceptable?
-- **Live:** the heavy step takes about 25 s from 14:56:00 plus QMT's read
-  time, inside the 45 s before the 14:56:45 orders. QMT runs every
+- **Live:** the bar reads and adjustment happen at 14:30; the step at
+  14:56:00 reads only ticks and takes about 25 s, inside the 45 s before
+  the 14:56:45 orders. QMT runs every
   strategy on one thread, so other strategies wait during that time. If
   the client's reads are slow, move `signal_time` earlier: orders still go
   out at `order_time`, or at once if the signals finish later than that.
@@ -318,14 +336,21 @@ Run these in order; each step's log is the evidence for the next.
    total shares) and TDX's. With 1e12 capital, QMT's percentage returns
    mean nothing: compare trade lists and yuan profits.
 5. **Live dry run** (default `dry_run`) for a few trading days:
-   - Start the strategy before 14:30, so the morning static read (about
-     15,000 calls) has finished by `signal_time`.
+   - Start the strategy before 14:30, so the static read (about 15,000
+     calls) and the download have finished by `prepare_time`.
+   - Check the `history up to <yesterday> loaded` line at 14:30: no indices
+     behind, few stocks stopping earlier.
    - Check the static read time, `chao: N signals` and its time, and the
      orders marked `(dry-run)` with limit prices.
    - A dry run writes no ledger, so it shows no sells. To rehearse one, put
      a held stock in the ledger file first, e.g.
      `{"SH600000": {"strategy": 1, "selling": true}}`.
-6. **Simulation account** with `dry_run = 0`, `ledger_path` set and a small
+6. **Machine.** Keep it plugged in and awake from before 14:30 to 15:00:
+   in Windows power options, set closing the lid and sleep to "do nothing"
+   / "never", and keep Windows Update restarts outside trading hours. A
+   machine asleep at 14:56 trades late, when it wakes, or not at all after
+   15:00.
+7. **Simulation account** with `dry_run = 0`, `ledger_path` set and a small
    `max_positions`. Check the orders in QMT, the fills, and that the ledger
    file holds the bought stocks with their strategy.
 7. **Real account**, with the same settings as step 6.
