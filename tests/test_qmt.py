@@ -396,3 +396,10 @@ def test_mode_can_be_forced(test_strategy):
         C.barpos = 299
         entry.handlebar(C)
     assert entry.RUN.backtest and C.capital == entry.BACKTEST_CAPITAL
+
+
+def test_folder_summary_counts_files_in_subfolders(tmp_path):
+    from chao.qmt_source import folder_summary
+    (tmp_path / 'SH').mkdir()
+    (tmp_path / 'SH' / '600000.dat').write_bytes(b'xx')
+    assert folder_summary(str(tmp_path)).startswith("1 files, subfolders ['SH'], newest ['SH")
