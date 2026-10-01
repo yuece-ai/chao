@@ -75,15 +75,16 @@ def test_bundle_writes_the_local_config_after_checking_it():
         bundle('test', {'max_position': 5})
 
 
-def test_committed_qmt_file_matches_the_sources():
-    """qmt/chao_strategy.py is what bundle_qmt.py builds from qmt/integration.json."""
+@pytest.mark.parametrize('name', ['backtest', 'live'])
+def test_committed_qmt_files_match_the_sources(name):
+    """qmt/chao_<name>.py is what bundle_qmt.py builds from qmt/<name>.json."""
     import json
     from pathlib import Path
-    committed = Path('qmt/chao_strategy.py').read_bytes().decode('ascii')
+    committed = Path('qmt/chao_{}.py'.format(name)).read_bytes().decode('ascii')
     revision = committed.splitlines()[1].split(' from ')[1].split(';')[0]
-    config = json.loads(Path('qmt/integration.json').read_text(encoding='utf-8'))
+    config = json.loads(Path('qmt/{}.json'.format(name)).read_text(encoding='utf-8'))
     assert committed == bundle(revision, config), \
-        'rebuild: python scripts/bundle_qmt.py --config qmt/integration.json --out qmt/chao_strategy.py'
+        'rebuild: python scripts/bundle_qmt.py --config qmt/{0}.json --out qmt/chao_{0}.py'.format(name)
 
 
 def test_bundle_is_pure_ascii_and_keeps_the_chinese_values():

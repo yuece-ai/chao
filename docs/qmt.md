@@ -35,14 +35,20 @@ nix develop --command python scripts/bundle_qmt.py --config qmt.json   # writes 
 
 Rebuild after changing `qmt.json`; never edit the generated file.
 
-The integration build is committed as `qmt/chao_strategy.py`, built from
-`qmt/integration.json`: backtest account `testS` (QMT's selected account
-overrides it live), trade lists in `D:\chao\report`, ledger in
-`D:\chao\ledger.json`, `dry_run` on. A test keeps it identical to a
-fresh build. After changing the sources, rebuild it:
+Two ready-to-paste builds are committed, so nothing has to be edited in the
+client:
+- `qmt/chao_backtest.py`, from `qmt/backtest.json`: `mode` backtest,
+  account `testS`, trade lists in `D:\chao\report`;
+- `qmt/chao_live.py`, from `qmt/live.json`: `mode` live, the account QMT
+  injects, ledger in `D:\chao\ledger.json`, `dry_run` on.
+
+A test keeps both identical to a fresh build. After changing the sources,
+rebuild them:
 
 ```sh
-nix develop --command python scripts/bundle_qmt.py --config qmt/integration.json --out qmt/chao_strategy.py
+for m in backtest live; do
+  nix develop --command python scripts/bundle_qmt.py --config qmt/$m.json --out qmt/chao_$m.py
+done
 ```
 
 Before running:
@@ -50,7 +56,7 @@ Before running:
    indices the enabled strategies read (for strategies 1–6: `000001.SH`,
    `399001.SZ`, `399006.SZ`, `000688.SH`), ex-rights data and financial
    data. Keep the daily data current; live runs add only today's bar.
-2. Copy `dist/chao_strategy.py` into QMT's strategy directory.
+2. Paste `qmt/chao_backtest.py` (backtest) or `qmt/chao_live.py` (live) into a QMT strategy.
 3. Set the main chart to daily (1d); the strategy refuses other periods.
 
 Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
@@ -290,7 +296,7 @@ Run these in order; each step's log is the evidence for the next.
    - In 数据管理, download daily bars for 沪深A股 and the four indices
      from 2008 on (a backtest wants about 400 days before its start), plus
      ex-rights and financial data.
-2. **Startup.** Build with your `qmt.json` and load `dist/chao_strategy.py`
+2. **Startup.** Paste `qmt/chao_backtest.py` into a QMT strategy and run it
    on a daily 000001.SH chart. The first log lines show:
    - the Python, pandas and numpy versions;
    - one `probe` line per QMT data API, with its type and a sample;
