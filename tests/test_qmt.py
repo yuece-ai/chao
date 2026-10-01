@@ -1,4 +1,5 @@
 import io
+import json
 from contextlib import redirect_stdout
 import pandas as pd
 import pytest
@@ -122,7 +123,7 @@ def test_live_without_account_only_reports_signals(test_strategy):
 
 def test_live_orders_sell_only_owned_and_update_the_ledger(test_strategy, tmp_path):
     ledger = tmp_path / 'ledger.json'
-    ledger.write_text('["SZ000001"]')
+    ledger.write_text('{"SZ000001": {"selling": false, "strategy": 1}}')
     C = live([10.0] * 299 + [9.0], names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']},
              limits={'000001.SZ': (8.9, 10.9)})
     account = FakeAccount(positions=[Obj(symbol='SZ000001', volume=1000, sellable=1000, value=9000.0),
@@ -130,41 +131,52 @@ def test_live_orders_sell_only_owned_and_update_the_ledger(test_strategy, tmp_pa
     run_handlebar(C, account, account_id='A1', dry_run=0, ledger_path=str(ledger))
     # Limit 9 * 0.985 = 8.865 -> 8.87, inside the 跌停 floor of 8.90 -> 8.90.
     assert account.orders == [(24, 1101, 'A1', '000001.SZ', 11, 8.9, 1000, 'chao', 2, 'chao-s1')]
-    assert ledger.read_text() == '["SZ000001"]'  # still held until the sell fills
+    # Still held until the sell fills, now marked as a pending sell.
+    assert json.loads(ledger.read_text()) == {'SZ000001': {'selling': True, 'strategy': 1}}
 
 
-def test_backtest_places_each_bars_orders(test_strategy):
-    closes = [10.0] * 298 + [11.0, 10.0]
-    dates = pd.bdate_range('2020-01-01', periods=300).strftime('%Y%m%d')
-    C = FakeContextInfo(market_with(closes), names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']},
-                        backtest=True, bar_dates=dates)
-    account = FakeAccount(cash=100000.0)
-    with redirect_stdout(io.StringIO()):
-        entry.RUN, _ = entry.build_run(C, account.namespace(account_id='testS'))
-        for position in (298, 299):
+def backtest_client(closes, **kwargs):
+    dates = pd.bdate_range('2020-01-01', periods=len(closes)).strftime('%Y%m%d')
+    return FakeContextInfo(market_with(closes), names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']},
+                           backtest=True, bar_dates=dates, **kwargs)
+
+
+def run_backtest(C, account, positions, **gui):
+    with redirect_stdout(io.StringIO()) as out:
+        entry.init_with(C, account.namespace(account_id='testS', **gui))
+        for position in positions:
             C.barpos = position
             entry.handlebar(C)
-    # Bar 299 buys at 11.0 on its own bar (quickTrade 2); bar 300 has a sell,
-    # but the fake account holds nothing yet.
-    assert account.orders == [(23, 1101, 'testS', '000001.SZ', 5, -1, 900, 'chao', 2, 'chao-s1')]
-    # One batch plus the four SH/SZ board indices, read once for the whole backtest.
-    assert C.calls == [('get_market_data_ex', 5)]
+    return out.getvalue().splitlines()
 
 
-def test_backtest_sells_owned_stocks_from_the_sell_table(test_strategy):
-    closes = [10.0] * 298 + [11.0, 10.0]
-    dates = pd.bdate_range('2020-01-01', periods=300).strftime('%Y%m%d')
-    C = FakeContextInfo(market_with(closes), names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']},
-                        backtest=True, bar_dates=dates, start='2021-02-23 00:00:00')
-    account = FakeAccount(positions=[Obj(symbol='SZ000001', volume=900, sellable=900, value=9900.0)])
-    with redirect_stdout(io.StringIO()) as out:
-        entry.RUN, _ = entry.build_run(C, account.namespace(account_id='testS'))
-        entry.RUN.ledger.replace({'SZ000001'})
-        C.barpos = 299
-        entry.handlebar(C)
-    assert account.orders == [(24, 1101, 'testS', '000001.SZ', 5, -1, 900, 'chao', 2, 'chao-s1')]
-    # Only the window from C.start is kept: the 2021-02-22 buy falls outside it.
-    assert 'chao: backtest signals ready: 0 buy rows, 1 stocks with sells, 0 skipped' in out.getvalue()
+def test_backtest_mirrors_the_tdx_ledger_into_qmt(test_strategy, tmp_path):
+    from chao.replay import ReplaySpec, replay
+    closes = [10.0] * 297 + [11.0, 10.0, 10.0]
+    C = backtest_client(closes, start='2021-02-01 00:00:00')
+    account = FakeAccount()
+    log = run_backtest(C, account, range(297, 300), report_path=str(tmp_path))
+    assert C.capital == entry.BACKTEST_CAPITAL
+    # The trades are exactly those of the TDX ledger for this stock.
+    frame = market_with(closes)['000001.SZ']
+    frame.index = pd.to_datetime(frame.index)
+    sig = pd.DataFrame({'buy': frame.close > frame.close.shift(1), 'sell': frame.close < frame.close.shift(1)})
+    events, _ = replay(frame, sig, ReplaySpec('2021-02-01', '2021-02-23', 1e6, 0.0005, 0.0003))
+    assert [e['direction'] for e in events] == ['买开', '卖平']
+    shares = events[0]['quantity']
+    assert account.orders == [(23, 1101, 'testS', '000001.SZ', 5, -1, shares, 'chao', 2, 'chao-s1'),
+                              (24, 1101, 'testS', '000001.SZ', 5, -1, shares, 'chao', 2, 'chao-s1')]
+    lines = (tmp_path / 'strategy-1-signals.tsv').read_text(encoding='utf-8').splitlines()
+    assert lines[1].split('\t')[:6] == ['000001', 'X', '2021-02-19 00:00', '买开', '11.00', str(shares)]
+    assert any(line.startswith('chao: tdx strategy=1 trades=1 wins=0') for line in log)
+
+
+def test_backtest_warns_where_tdx_buys_and_sells_on_one_bar(test_strategy, monkeypatch):
+    same_bar = {'1-test.tdx': '{策略1-测试}\n买入条件:=CLOSE>REF(CLOSE,1);\n卖出条件:=CLOSE>REF(CLOSE,1);\n'}
+    monkeypatch.setattr(entry, 'strategy_files', lambda: same_bar)
+    C = backtest_client([10.0] * 298 + [11.0, 11.0], start='2021-02-01 00:00:00')
+    log = run_backtest(C, FakeAccount(), [298])
+    assert any('SZ000001 is bought and sold on the same bar in TDX; QMT applies T+1' in line for line in log)
 
 
 def test_restarted_live_run_does_not_repeat_todays_buys(test_strategy, tmp_path):
@@ -231,3 +243,31 @@ def test_older_clients_name_the_detail_call_get_instrumentdetail():
             return {'InstrumentName': 'OLD'}
     market = QmtMarket(OldClient({}), (), HISTORY_BARS, '')
     assert market.name('SZ000001') == 'OLD'
+
+
+def ledger_with(tmp_path, entries):
+    path = tmp_path / 'ledger.json'
+    path.write_text(json.dumps(entries))
+    return str(path)
+
+
+def test_a_pending_sell_is_retried_without_a_new_signal(test_strategy, tmp_path):
+    # Today's close is up: strategy 1 signals no sell, but yesterday's sell is still pending.
+    C = live([10.0] * 299 + [11.0], names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
+    account = FakeAccount(positions=[Obj(symbol='SZ000001', volume=1000, sellable=1000, value=11000.0)])
+    path = ledger_with(tmp_path, {'SZ000001': {'strategy': 1, 'selling': True}})
+    run_handlebar(C, account, account_id='A1', dry_run=0, ledger_path=path)
+    assert [(o[0], o[6]) for o in account.orders] == [(24, 1000)]
+
+
+def test_only_the_buying_strategy_sells(test_strategy, tmp_path, monkeypatch):
+    # The stock was bought by strategy 2; strategy 1's sell signal does not sell it.
+    monkeypatch.setattr(entry, 'CONFIG', dict(entry.CONFIG, strategies='1,2', priority='2,1'))
+    monkeypatch.setattr(entry, 'strategy_files', lambda: dict(TEST_STRATEGY, **{
+        '2-hold.tdx': '{策略2-持有}\n买入条件:=CLOSE<0;\n卖出条件:=CLOSE<0;\n'}))
+    C = live([10.0] * 299 + [9.0], names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
+    account = FakeAccount(positions=[Obj(symbol='SZ000001', volume=1000, sellable=1000, value=9000.0)])
+    path = ledger_with(tmp_path, {'SZ000001': {'strategy': 2, 'selling': False}})
+    log = run_handlebar(C, account, account_id='A1', dry_run=0, ledger_path=path)
+    assert 'chao: signal 2021-02-23 strategy=1 SZ000001 sell' in log
+    assert account.orders == []

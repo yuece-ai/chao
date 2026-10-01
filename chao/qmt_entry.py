@@ -5,9 +5,12 @@ live) is chosen in the QMT GUI and read from C.do_back_test. The main chart
 must be daily. State lives in the module-level RUN object, because QMT rolls
 back attributes set on ContextInfo between handlebar calls.
 
-- Backtest: on the first bar the signals inside the backtest window are
-  computed in batches (buys as rows, sells as one boolean table per stock);
-  each bar then sends that day's orders to passorder and QMT simulates them.
+- Backtest, aligned with the user's TDX backtest: on the first bar every
+  (strategy, stock) pair is replayed with the TDX ledger (its own
+  tdx_cash, fills at the close, TDX fees, float32 money). The trades are
+  written in the TDX export layout to report_path, and each bar sends the
+  same trades (date, side, shares) to passorder, so QMT's own backtest
+  report shows them too.
 - Live, once a day on the last bar: per-stock static data is read on the
   first tick; at signal_time today's signals are computed (the slow part);
   at order_time the account and the latest prices are read and limit
@@ -26,17 +29,22 @@ import pandas as pd
 from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.market import Context, MissingInput
-from chao.orders import limit_price, plan_orders
+from chao.orders import Order, limit_price, plan_orders
 from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, qmt_date
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, number, text
-from chao.signals import history_signals, last_bar_signals, required_indices
+from chao.replay import BUY, ReplaySpec, replay
+from chao.signals import last_bar_signals, panel_signals, required_indices
+from chao.tdx_report import summary_line, write_exports
 
 # Code configuration: edit here when a value should not be a GUI parameter.
 CONFIG = {}
 # Stocks per batch: one get_market_data_ex call and one evaluation panel.
 # Backtests read the full history, so their panels are kept smaller.
 BATCH_LIVE, BATCH_BACKTEST = 200, 25
+# QMT backtest capital: large enough that every TDX trade, each sized from
+# its own tdx_cash, can be filled at once in one account.
+BACKTEST_CAPITAL = 1e12
 RUN = None           # the current Run; set by init()
 
 
@@ -72,7 +80,11 @@ FIELDS = [
     Field('signal_time', clock, '14:56:00', 'live only: when to compute the day\'s signals (~25 s)'),
     Field('order_time', clock, '14:56:45', 'live only: when to send the orders'),
     Field('price_margin', number, 0.015, 'live only: limit price this far through the last price'),
-    Field('ledger_path', text, '', 'live only: JSON file of symbols chao bought'),
+    Field('ledger_path', text, '', 'live only: JSON file of the stocks chao bought and their pending sells'),
+    Field('report_path', text, '', 'backtest only: directory for the TDX-layout trade lists'),
+    Field('tdx_cash', number, 1000000.0, 'backtest: cash per (strategy, stock), as in the TDX backtest'),
+    Field('buy_fee_rate', number, 0.0005, 'backtest: TDX buy fee rate'),
+    Field('sell_fee_rate', number, 0.0003, 'backtest: TDX sell fee rate'),
 ]
 QmtSettings = namedtuple('QmtSettings', [f.key for f in FIELDS])
 
@@ -83,9 +95,7 @@ class Run:
     def __init__(self, context, api, ledger, backtest):
         self.context, self.api, self.ledger, self.backtest = context, api, ledger, backtest
         self.index_codes = sorted(required_indices(context.strategies.values()))
-        self.buys = None              # backtest: {date: [(strategy, symbol, 'buy')]}
-        self.sells = {}               # backtest: {symbol: DataFrame of sell flags, one column per strategy}
-        self.prices = {}              # {(date, symbol): unadjusted close} of buy signals
+        self.trades = None            # backtest: {date: [Order]} from the TDX replay
         self.universe = None          # live: today's stock list
         self.static_date = None       # live: day the static data was read
         self.signals = {}             # live: {date: (buys, {symbol: [strategy]})}
@@ -149,10 +159,6 @@ def batches(items, size):
     return [items[i:i + size] for i in range(0, len(items), size)]
 
 
-def record_price(run, date, symbol):
-    run.prices[date, symbol] = run.context.market.unadjusted_close(symbol, date)
-
-
 def report(found, errors):
     for date, sid, symbol, side in found:
         print('chao: signal {} strategy={} {} {}'.format(date, sid, symbol, side))
@@ -160,73 +166,91 @@ def report(found, errors):
         print('chao: skipped strategy={} {}: {}'.format(sid, symbol, message))
 
 
-def trade(C, run, date, buys, sells_for, prices, placing, limits=None):
-    """Plan and place (or print) one day's orders; returns them.
+def trade(C, run, date, buys, sells_today, limits, placing):
+    """Plan and send (or print) one live day's orders; returns them.
 
-    buys: [(strategy, symbol, 'buy')]; sells_for(symbol) -> strategy ids with
-    a sell signal today, asked only for the symbols chao holds; prices sizes
-    the buys; limits: {(side, symbol): limit price} live, None in a backtest.
+    buys: [(strategy, symbol, 'buy')]; sells_today: {symbol: [strategy ids
+    with a sell signal]}; limits: {(side, symbol): limit price}. A held stock
+    is sold when the strategy that bought it signals a sell, and stays
+    pending until it is gone, as in the TDX backtest.
     """
-    settings = run.context.settings
-    book = read_book(run.api, settings.account_id, run.ledger.owned, live=not run.backtest)
-    sells = [(sid, symbol, 'sell') for symbol in sorted(book.owned) for sid in sells_for(symbol)]
-    orders = plan_orders(buys + sells, book, prices, settings.max_positions, settings.priority)
-    owned = set(book.owned)
+    settings, ledger = run.context.settings, run.ledger
+    book = read_book(run.api, settings.account_id, ledger.owned, live=True)
     if placing:
-        run.ledger.replace(owned)  # forget symbols no longer held
+        ledger.keep(book.owned)
+    pending = sorted(s for s in book.owned
+                     if ledger.selling(s) or ledger.owner(s) in sells_today.get(s, []))
+    if placing:
+        for symbol in pending:
+            ledger.sell(symbol)
+    sells = [(ledger.owner(s), s, 'sell') for s in pending]
+    buy_prices = {symbol: limits.get(('buy', symbol)) for _, symbol, _ in buys}
+    sell_prices = {symbol: limits[('sell', symbol)] for symbol in pending if ('sell', symbol) in limits}
+    orders = plan_orders(buys + sells, book, buy_prices, settings.max_positions, settings.priority, sell_prices)
     for order in orders:
-        price = None if limits is None else limits.get((order.side, order.symbol))
-        if limits is not None and price is None:
+        price = limits.get((order.side, order.symbol))
+        if price is None:
             print('chao: no price today for {} {}; order not sent'.format(order.side, order.symbol))
             continue
         if placing:
             place(run.api, C, settings.account_id, order, price)
             if order.side == 'buy':
-                owned.add(order.symbol)
-                run.ledger.replace(owned)  # at once, so a later failure cannot orphan the buy
-        print('chao: order {} {} {} {} strategy={}{}{}'.format(
-            date, order.side, order.symbol, order.volume, order.strategy,
-            '' if price is None else ' limit={:.2f}'.format(price), '' if placing else ' (dry-run)'))
+                ledger.bought(order.symbol, order.strategy)  # at once, so a later failure cannot orphan it
+        print('chao: order {} {} {} {} strategy={} limit={:.2f}{}'.format(
+            date, order.side, order.symbol, order.volume, order.strategy, price, '' if placing else ' (dry-run)'))
     return orders
 
 
-def prepare_backtest(run, start):
-    """Signals inside [start, end] for every stock, read in batches."""
+def prepare_backtest(run, start, end):
+    """Replay every (strategy, stock) pair with the TDX ledger over
+    [start, end], write the TDX-layout trade lists and queue the trades."""
     started = time.time()
-    market, end = run.context.market, run.context.market.end_time
-    run.buys, errors = {}, []
+    settings, market = run.context.settings, run.context.market
+    spec = ReplaySpec(start, end, settings.tdx_cash, settings.buy_fee_rate, settings.sell_fee_rate)
+    strategies = [s for _, s in sorted(run.context.strategies.items())]
+    events = {sid: [] for sid in run.context.strategies}
+    summaries = {sid: [] for sid in run.context.strategies}
+    names, errors, run.trades = {}, [], {}
     for batch in batches(market.universe(), BATCH_BACKTEST):
         market.prefetch(batch, run.index_codes)
-        results, bad = history_signals(run.context, batch)
+        bars, results, bad = panel_signals(strategies, market, batch)
         errors += bad
-        for symbol, result in results.items():
-            window = {sid: sig.loc[start:end] for sid, sig in result.items()}
-            for sid, sig in window.items():
-                for day in sig.index[sig['buy'].values]:
-                    date = day.strftime('%Y-%m-%d')
-                    run.buys.setdefault(date, []).append((sid, symbol, 'buy'))
-                    record_price(run, date, symbol)
-            sells = pd.DataFrame({sid: sig['sell'] for sid, sig in window.items()})
-            if len(sells.columns) and sells.values.any():
-                run.sells[symbol] = sells
-    last = min(c.index[-1] for c in market.index_closes().values()).strftime('%Y%m%d')
+        for symbol, by_strategy in results.items():
+            names[symbol[2:]] = market.name(symbol)
+            for sid, sig in by_strategy.items():
+                rows, summary = replay(bars[symbol], sig, spec)
+                summaries[sid].append(summary)
+                for e in rows:
+                    e.update(strategy=sid, code=symbol[2:])
+                    side = 'buy' if e['direction'] == BUY else 'sell'
+                    run.trades.setdefault(e['date'], []).append(Order(side, symbol, e['quantity'], sid))
+                events[sid] += rows
+    last = min(c.index[-1] for c in market.index_closes().values()).strftime('%Y-%m-%d')
     if last < end:
         raise MissingInput('QMT bars end on {}, before the backtest end {}; download the history first'
                            .format(last, end))
     report([], errors)
-    print('chao: backtest signals ready: {} buy rows, {} stocks with sells, {} skipped, {:.0f}s'.format(
-        sum(len(v) for v in run.buys.values()), len(run.sells), len(errors), time.time() - started))
+    for sid in sorted(summaries):
+        print('chao: tdx ' + summary_line(sid, summaries[sid]))
+    if settings.report_path:
+        for path in write_exports(settings.report_path, events, names):
+            print('chao: wrote ' + path)
+    same_day = sorted({(o.symbol, d) for d, orders in run.trades.items() for o in orders if o.side == 'sell'
+                       and any(b.side == 'buy' and b.symbol == o.symbol and b.strategy == o.strategy for b in orders)})
+    for symbol, day in same_day:
+        print('chao: {} {} is bought and sold on the same bar in TDX; QMT applies T+1 and cannot sell it that day'
+              .format(day, symbol))
+    print('chao: backtest ready: {} trades, {} skipped, {:.0f}s'.format(
+        sum(len(v) for v in events.values()), len(errors), time.time() - started))
 
 
-def backtest_sells(run, date):
-    day = pd.Timestamp(date)
-    def sells_for(symbol):
-        table = run.sells.get(symbol)
-        if table is None or day not in table.index:
-            return []
-        row = table.loc[day]
-        return [sid for sid in table.columns if row[sid]]
-    return sells_for
+def backtest_bar(C, run, date):
+    """Send the TDX trades of this bar to QMT's backtest engine."""
+    account = run.context.settings.account_id
+    for order in run.trades.get(date, []):
+        place(run.api, C, account, order)
+        print('chao: order {} {} {} {} strategy={}'.format(date, order.side, order.symbol, order.volume,
+                                                           order.strategy))
 
 
 def refresh_static(run, date):
@@ -275,17 +299,15 @@ def live_orders(C, run, date):
         print('chao: no account_id, so orders are not planned')
         return
     buys, sells = run.signals[date]
-    symbols = sorted({symbol for _, symbol, _ in buys} | (set(sells) & run.ledger.owned))
+    symbols = sorted({symbol for _, symbol, _ in buys} | run.ledger.owned)
     last = market.latest_prices(symbols, date)
     limits = {}
     for symbol, price in last.items():
         down, up = market.price_limits(symbol)
         for side in ('buy', 'sell'):
             limits[side, symbol] = limit_price(side, price, settings.price_margin, down, up)
-    # Size buys at their limit price: that is the cash the broker freezes.
-    prices = {symbol: limits.get(('buy', symbol)) for _, symbol, _ in buys}
-    trade(C, run, date, buys, lambda symbol: sells.get(symbol, []), prices,
-          placing=not settings.dry_run, limits=limits)
+    # Buys are sized at their limit price: that is the cash the broker freezes.
+    trade(C, run, date, buys, sells, limits, placing=not settings.dry_run)
 
 
 def now_hms():
@@ -293,8 +315,14 @@ def now_hms():
 
 
 def init(C):
+    init_with(C, globals())
+
+
+def init_with(C, namespace):
     global RUN
-    RUN, lines = build_run(C, globals())
+    RUN, lines = build_run(C, namespace)
+    if RUN.backtest:
+        C.capital = BACKTEST_CAPITAL  # every TDX trade has its own tdx_cash
     for line in lines:
         print('chao: config ' + line)
     print('chao: mode {}'.format('backtest' if RUN.backtest else 'live'))
@@ -305,11 +333,9 @@ def handlebar(C):
     run.context.market.C = C  # QMT passes the ContextInfo to use for this call
     date = qmt_date(C.get_bar_timetag(C.barpos)).strftime('%Y-%m-%d')
     if run.backtest:
-        if run.buys is None:
-            prepare_backtest(run, qmt_date(C.start).strftime('%Y-%m-%d'))
-        buys = run.buys.get(date, [])
-        prices = {symbol: run.prices.get((date, symbol)) for _, symbol, _ in buys}
-        trade(C, run, date, buys, backtest_sells(run, date), prices, placing=True)
+        if run.trades is None:
+            prepare_backtest(run, qmt_date(C.start).strftime('%Y-%m-%d'), qmt_date(C.end).strftime('%Y-%m-%d'))
+        backtest_bar(C, run, date)
         return
     if not C.is_last_bar() or date in run.done:
         return

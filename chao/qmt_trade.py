@@ -55,13 +55,38 @@ def place(api, C, account_id, order, price=None):
 
 
 class Ledger:
-    """Symbols chao bought and still tracks; persisted when a path is set."""
+    """The stocks chao bought: the strategy that bought each one and whether
+    its sell is pending. A pending sell is retried every day until the
+    position is gone, as a TDX backtest sell always completes. Persisted as
+    JSON {symbol: {"strategy": id, "selling": bool}} when a path is set."""
 
     def __init__(self, path):
         self.path = Path(path) if path else None
-        self.owned = set(json.loads(self.path.read_text())) if self.path and self.path.exists() else set()
+        self.entries = json.loads(self.path.read_text()) if self.path and self.path.exists() else {}
 
-    def replace(self, owned):
-        self.owned = set(owned)
+    @property
+    def owned(self):
+        return set(self.entries)
+
+    def owner(self, symbol):
+        return self.entries[symbol]['strategy']
+
+    def selling(self, symbol):
+        return self.entries[symbol]['selling']
+
+    def keep(self, held):
+        """Forget symbols no longer held (sold, or a buy that never filled)."""
+        self.entries = {s: e for s, e in self.entries.items() if s in held}
+        self.save()
+
+    def bought(self, symbol, strategy):
+        self.entries[symbol] = {'strategy': strategy, 'selling': False}
+        self.save()
+
+    def sell(self, symbol):
+        self.entries[symbol]['selling'] = True
+        self.save()
+
+    def save(self):
         if self.path:
-            self.path.write_text(json.dumps(sorted(self.owned)))
+            self.path.write_text(json.dumps(self.entries, sort_keys=True))

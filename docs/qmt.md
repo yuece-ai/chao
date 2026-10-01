@@ -37,13 +37,20 @@ Before running:
 
 Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
 
-- **Backtest:** at the first bar, signals inside the backtest window
-  (`C.start`–`C.end`) are computed from QMT's local history in batches of
-  200 stocks. Buy signals are kept as rows, sell signals as one boolean
-  table per stock. Each bar then sends that day's orders to `passorder` with
-  quickTrade 2, so they fill on the signal bar, and QMT simulates them. Fees
-  and slippage come from QMT's backtest settings. If QMT's bars end before
-  `C.end`, the run stops and asks for the history to be downloaded.
+- **Backtest, aligned with the user's TDX backtest:**
+  - At the first bar, every (strategy, stock) pair is replayed with the TDX
+    ledger (`chao/replay.py`, the rules verified in PARITY.md): its own
+    `tdx_cash`, fills at the close, TDX fees (0.05% buy, 0.03% sell), float32
+    money, buy before sell on one bar, flatten on the last bar.
+  - The trades go to `report_path` in the TDX export layout, one
+    `strategy-<id>-signals.tsv` per strategy, with a summary line per
+    strategy in the console. Compare them with
+    `scripts/compare_tdx_report.py --report <dir>`.
+  - Each bar then sends the same trades (date, side, shares) to `passorder`
+    at the bar close, so QMT's own backtest report lists them. The backtest
+    capital is set to 1e12 in `init`, so no trade is limited by cash.
+  - If QMT's bars end before `C.end`, the run stops and asks for the
+    history to be downloaded.
 - **Live:** only on the last bar, in three steps a day:
   1. On the first tick, read the universe and the per-stock static data
      (ex-rights, total shares, contract details with today's price limits).
@@ -78,26 +85,63 @@ The log goes to stdout (the QMT console), one line per event, prefixed `chao:`:
 - skipped stocks;
 - the time taken by each phase.
 
-## Order rules (`chao/orders.py`)
+## Alignment with the TDX backtest
 
-- **Selling:** a stock is sold only if chao bought it, i.e. it is in the
-  ledger, so manual holdings are never touched. A sell uses the sellable
-  volume, which respects T+1; frozen shares of a pending sell are not
-  sellable.
+The backtest's own trade lists reproduce the TDX exports. Below, the full
+QMT backtest preparation was run on Linux with the fake client serving TDX
+data, all reference stocks, 2010-01-01 to 2026-09-30, and one (current)
+adjustment snapshot:
+
+| Strategy | TDX rows | Matched | Accounting matched | Trades / wins (QMT vs TDX) | Net profit gap |
+|---|---:|---:|---:|---|---:|
+| 1 | 720 | 720 | 720 | 360/200 vs 360/200 | 2.32 yuan |
+| 2 | 1,594 | 1,594 | 1,573 | 797/456 vs 797/456 | 0.013% |
+| 3 | 1,792 | 1,790 | 1,785 | 896/521 vs 896/521 | 0.04% |
+| 4 | 1,846 | 1,845 | 1,842 | 923/613 vs 923/612 | 0.01% |
+| 5 | 5,370 | 5,369 | 5,352 | 2685/2110 vs 2685/2110 | 0.009% |
+| 6 | 3,196 | 3,190 | 3,051 | 1597/1273 vs 1598/1274 | 0.11% |
+| 7 | 600 | 598 | 590 | 300/234 vs 300/234 | 0.014% |
+
+The remaining differences are those of PARITY.md. Exports 2 and 6 were
+made from older adjustment snapshots, and QMT can only serve today's data.
+
+QMT's own backtest engine fills the mirrored trades with its own matching.
+To keep its report close, set QMT's backtest parameters as follows:
+- buy commission 0.05%, sell commission 0.03%;
+- no stamp duty, no minimum commission, no slippage;
+- 复权方式 前复权;
+- start 2010-01-01.
+
+Two differences remain:
+- QMT's forward-adjusted prices are its own;
+- QMT applies T+1, so the three TDX trades bought and sold on the same bar
+  (listed in the log) cannot be sold that day.
+
+## Order rules for live trading (`chao/orders.py`)
+
+Live trading has one account, so capital is shared. Signals and sells
+follow the TDX backtest wherever a real account allows:
+- **Selling:** a stock is sold when the strategy that bought it signals a
+  sell. The sell then stays pending and is sent every day until the
+  position is gone, as a TDX sell always completes. Only stocks chao bought
+  (the ledger) are ever sold, using the sellable volume, so T+1 holds and
+  manual holdings are never touched.
+- **Sale proceeds:** a sell's expected proceeds (limit price × shares, less
+  0.2%) fund the same day's buys, as A-share proceeds do.
 - **Position limit:** at most `max_positions` chao stocks are held at once.
 - **No re-buys:** a stock already in the account is never bought again.
   Neither is a stock with a chao order today, which keeps a restarted live
   strategy from repeating an unfilled buy.
 - **Buy size:** each buy targets total assets / `max_positions`, capped by
-  the remaining cash, minus 0.2% kept back for fees. Volumes are whole
-  100-share lots; STAR (688/689) orders need at least 200 shares.
+  the cash available, minus 0.2% for fees. Volumes are whole 100-share
+  lots; STAR (688/689) orders need at least 200 shares.
 - **Conflicts:** when several signals arrive on the same day, `priority`
-  decides. Buys are taken in (priority, symbol) order, and a stock signalled
-  by several strategies belongs to the highest-priority one.
-- **Ledger:** in a backtest it lives in memory. For live orders it is the
-  JSON file at `ledger_path`, written after every placed buy, so a failure
-  later in the loop cannot leave a bought stock untracked (and never sold).
-  A symbol leaves the ledger once it is no longer held.
+  decides. Buys are taken in (priority, symbol) order, and a stock
+  signalled by several strategies belongs to the highest-priority one.
+- **Ledger:** the JSON file at `ledger_path`, as
+  `{symbol: {"strategy": id, "selling": bool}}`. It is written after every
+  placed buy and every new pending sell, and a symbol leaves it once it is
+  no longer held.
 
 ## Settings
 
@@ -116,7 +160,10 @@ holds numbers only, so lists and text belong in `CONFIG`.
 | `signal_time` | `14:56:00` | live only: when to compute the day's signals |
 | `order_time` | `14:56:45` | live only: when to send the orders |
 | `price_margin` | `0.015` | live only: limit price this far through the last price |
-| `ledger_path` | (empty) | required for live orders: JSON file of chao's symbols |
+| `ledger_path` | (empty) | required for live orders: JSON file of chao's stocks and pending sells |
+| `report_path` | (empty) | backtest: directory for the TDX-layout trade lists |
+| `tdx_cash` | `1000000` | backtest: cash per (strategy, stock), as in the TDX backtest |
+| `buy_fee_rate` / `sell_fee_rate` | `0.0005` / `0.0003` | backtest: TDX fee rates |
 
 ## QMT API use, checked against the official docs
 
@@ -152,8 +199,8 @@ so QMT's own call latency is not included. The universe is about 5,100
 | Live, first tick of the day: static data | 0.4 ms + 3 calls | ~2 s + call latency | ~15,000 |
 | Live, signal_time: 400 bars plus today's tick, 6 strategies | 4.7 ms | ~24 s + batch reads | 26 bar reads + 26 tick reads |
 | Live, order_time: plan and send | — | under 1 s | 2–3 account reads + 1 tick read + one passorder per order |
-| Backtest preparation: full history, 6 strategies | 12.6 ms | ~64 s + reads | 204 bar reads (batches of 25) + 15,000 static reads |
-| Backtest, per bar | — | under 1 ms | 2–3 account reads |
+| Backtest preparation: full history, signals plus the TDX replay | ~22 ms | ~66 s for the 3,051 reference stocks, ~2 min for 5,100 | 204 bar reads (batches of 25) + static reads |
+| Backtest, per bar | — | under 1 ms | one passorder per mirrored trade |
 
 Every phase is linear in stocks × bars.
 
@@ -179,8 +226,8 @@ from earlier bars.
 
 Memory:
 - live keeps one 200-stock batch of 400-bar frames;
-- a backtest keeps sell tables of about 12 KB per stock for a 3.7-year
-  window, plus one 25-stock batch.
+- a backtest keeps the TDX trade list (tens of thousands of small
+  records) plus one 25-stock batch.
 
 Is this acceptable?
 - **Live:** the heavy step takes about 25 s from 14:56:00 plus QMT's read
@@ -188,13 +235,16 @@ Is this acceptable?
   strategy on one thread, so other strategies wait during that time. If
   the client's reads are slow, move `signal_time` earlier: orders still go
   out at `order_time`, or at once if the signals finish later than that.
-- **Backtest:** about a minute of one-time preparation, then fast bars.
+- **Backtest:** one to two minutes of one-time preparation, then fast bars.
 
-Known differences from the TDX parity replay:
-- At 14:50, today's close and AMO (turnover) are intraday values. AMO is
-  still short of the full day, so the AMO filters (e.g. `AMO>200000000`)
-  pass less often than in a backtest that uses the full-day bar.
-- TDX gives every stock its own 1,000,000; here all strategies share one
-  account.
-- The backtest universe is today's sector list, so delisted stocks are
-  missing.
+Known differences between live trading and the TDX backtest:
+- At 14:56, today's close and AMO (turnover) are intraday values. AMO is
+  still a little short of the full day, so the AMO filters (e.g.
+  `AMO>200000000`) can pass less often than in a backtest that uses the
+  full-day bar.
+- TDX gives every (strategy, stock) its own 1,000,000; live trading shares
+  one account.
+- Live sells fill near 14:56:45 at the market, not at the close, and T+1
+  applies.
+- The backtest universe is today's sector list, so stocks delisted since
+  are missing.

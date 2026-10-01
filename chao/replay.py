@@ -6,7 +6,7 @@ displayed cent.  TDX fills at the bar close without slippage and keeps every
 money value as float32; displayed values are rounded only for output.
 """
 import math
-from dataclasses import dataclass
+from typing import NamedTuple
 import numpy as np
 import pandas as pd
 
@@ -18,8 +18,7 @@ def f32(value):
     return float(np.float32(value))
 
 
-@dataclass(frozen=True)
-class ReplaySpec:
+class ReplaySpec(NamedTuple):
     start: str
     end: str
     initial_cash: float
@@ -27,8 +26,7 @@ class ReplaySpec:
     sell_fee_rate: float
 
 
-@dataclass(frozen=True)
-class Position:
+class Position(NamedTuple):
     quantity: int
     price: float
     fee: float
@@ -62,28 +60,32 @@ def sell_fill(position, close, spec):
 
 
 def replay(frame, signals, spec):
+    """(events, summary) of one stock replayed with the TDX ledger rules."""
     bars = frame.loc[spec.start:spec.end]
-    cash = f32(spec.initial_cash); position = None; events = []; curve = []
-    for date, row in bars.iterrows():
-        sig = signals.loc[date]
+    dates = bars.index
+    closes = bars['close'].values.tolist()
+    flags = signals.loc[dates]
+    buys, sells = flags['buy'].values.tolist(), flags['sell'].values.tolist()
+    cash = f32(spec.initial_cash); position = None; events = []
+    equity = []
+    for i, close in enumerate(closes):
         # TDX checks the buy before the sell, so a bar that meets both
         # conditions opens and closes a position at the same close.
-        if not position and sig.buy:
-            fill = buy_fill(cash, row.close, spec)
+        if not position and buys[i]:
+            fill = buy_fill(cash, close, spec)
             if fill:
                 position, cash, fields = fill
-                events.append(dict(date=date.strftime('%Y-%m-%d'), direction=BUY, **fields))
-        if position and sig.sell:
-            cash, fields = sell_fill(position, row.close, spec); position = None
-            events.append(dict(date=date.strftime('%Y-%m-%d'), direction=SELL, **fields))
-        curve.append((date, cash + (position.quantity * row.close if position else 0.0)))
+                events.append(dict(date=dates[i].strftime('%Y-%m-%d'), direction=BUY, **fields))
+        if position and sells[i]:
+            cash, fields = sell_fill(position, close, spec); position = None
+            events.append(dict(date=dates[i].strftime('%Y-%m-%d'), direction=SELL, **fields))
+        equity.append(cash + (position.quantity * close if position else 0.0))
     if position:
-        date = bars.index[-1]
-        cash, fields = sell_fill(position, bars.close.iloc[-1], spec); position = None
-        events.append(dict(date=date.strftime('%Y-%m-%d'), direction=FLATTEN, **fields))
-    equity = pd.Series(dict(curve), dtype=float)
-    sells = [e for e in events if e['direction'] != BUY]
-    summary = {'closed_trades': len(sells), 'profitable_trades': sum(e['profit'] > 0 for e in sells),
+        cash, fields = sell_fill(position, closes[-1], spec); position = None
+        events.append(dict(date=dates[-1].strftime('%Y-%m-%d'), direction=FLATTEN, **fields))
+    curve = np.array(equity, dtype=float)
+    sold = [e for e in events if e['direction'] != BUY]
+    summary = {'closed_trades': len(sold), 'profitable_trades': sum(e['profit'] > 0 for e in sold),
                'net_profit': cash - spec.initial_cash, 'fees': sum(e['fee'] for e in events),
-               'max_drawdown': float((equity.cummax() - equity).max()) if len(equity) else 0.0}
+               'max_drawdown': float((np.maximum.accumulate(curve) - curve).max()) if len(curve) else 0.0}
     return events, summary

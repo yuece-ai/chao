@@ -5,6 +5,8 @@ Rules:
 - Only stocks in `owned` (bought by chao) are ever sold, so holdings the
   user opened by hand are left alone. Sells use the sellable volume, which
   is how T+1 is respected.
+- A sell's expected proceeds (at its limit price, less CASH_BUFFER) count
+  as cash for the same day's buys, as A-share sale proceeds do.
 - At most max_positions chao-owned stocks are held; a stock already in the
   account (owned or not), or with a chao order today, is never bought again.
   The order check keeps a restarted live run from repeating unfilled buys. Each buy targets
@@ -62,11 +64,12 @@ def lot_volume(symbol, value, price):
     return volume if volume >= minimum else 0
 
 
-def plan_orders(signals, book, prices, max_positions, priority):
-    """signals: [(strategy, symbol, 'buy'|'sell')]; prices: unadjusted {symbol: price};
-    priority: strategy ids, highest priority first."""
+def plan_orders(signals, book, prices, max_positions, priority, sell_prices=None):
+    """signals: [(strategy, symbol, 'buy'|'sell')]; prices: {symbol: buy price};
+    priority: strategy ids, highest priority first; sell_prices: {symbol:
+    sell price} used to count same-day proceeds."""
     rank = {sid: i for i, sid in enumerate(priority)}
-    ordered = sorted(signals, key=lambda s: (rank[s[0]], s[1], s[2]))
+    ordered = sorted(signals, key=lambda s: (rank.get(s[0], len(rank)), s[1], s[2]))
     orders: List[Order] = []
     sold = set()
     for sid, symbol, side in ordered:
@@ -77,7 +80,7 @@ def plan_orders(signals, book, prices, max_positions, priority):
     held = {s for s, h in book.holdings.items() if h.volume > 0}
     slots = max_positions - len((held & book.owned) - sold)
     target = book.total_asset / max_positions
-    cash = book.cash
+    cash = book.cash + sum(o.volume * (sell_prices or {}).get(o.symbol, 0.0) * (1 - CASH_BUFFER) for o in orders)
     bought = set()
     for sid, symbol, side in ordered:
         if side != 'buy' or symbol in held or symbol in book.ordered or symbol in bought or slots <= 0:
