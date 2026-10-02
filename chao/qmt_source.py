@@ -106,17 +106,18 @@ def tick_date(tick):
 
 
 def tick_amount_unit(tick):
-    """How many tick 'amount' units make one yuan, read from the tick
-    itself: amount / shares traded is the average price, which lies between
-    the day's low and high. The client was seen to report 100x yuan."""
+    """How many 'amount' units make one yuan in this tick, read from the
+    tick itself: amount / shares traded is the average price, which lies
+    between the day's low and high. The client sent 600000.SH ticks for one
+    day once in yuan and once at 100x, so every tick is checked.
+    None when no unit fits."""
     shares, amount = float(tick.get('pvolume') or 0), float(tick.get('amount') or 0)
-    if shares > 0:
-        for unit in TICK_AMOUNT_UNITS:
-            average = amount / unit / shares
-            if float(tick['low']) * 0.99 <= average <= float(tick['high']) * 1.01:
-                return unit
-    raise MissingInput('get_full_tick amount {} over pvolume {} is no price within low {} and high {} for any '
-                       'unit in {}'.format(amount, shares, tick.get('low'), tick.get('high'), TICK_AMOUNT_UNITS))
+    if shares <= 0:
+        return 1  # nothing traded
+    for unit in TICK_AMOUNT_UNITS:
+        if float(tick['low']) * 0.99 <= amount / unit / shares <= float(tick['high']) * 1.01:
+            return unit
+    return None
 
 
 def with_tick(frame, tick, day, amount_unit=1):
@@ -158,7 +159,7 @@ class QmtMarket(MarketData):
         self._index_closes = None
         self._prepared, self._prepared_index = {}, {}   # live: adjusted history, index bars
         self._today = None             # live: {symbol: prepared history + today's bar}
-        self.tick_amount_unit = None   # live: set from the startup probe's tick
+        self.bad_amount = []           # live: stocks whose tick amount fits no unit today
 
     def reset_static(self):
         self._events, self._shares, self._details = {}, {}, {}
@@ -261,8 +262,14 @@ class QmtMarket(MarketData):
         day = pd.Timestamp(today)
         codes = [to_qmt(s) for s in symbols] + [QMT_INDEX[c] for c in sorted(self._prepared_index)]
         ticks = self.C.get_full_tick(codes) or {}
-        self._today = {s: with_tick(self._prepared[s], ticks.get(to_qmt(s)), day, self.tick_amount_unit)
-                       for s in symbols if s in self._prepared}
+        self._today = {}
+        for s in (s for s in symbols if s in self._prepared):
+            tick = ticks.get(to_qmt(s))
+            unit = tick_amount_unit(tick) if tick else 1
+            if unit is None:  # no bar today rather than a wrong AMO
+                self.bad_amount.append(s)
+                tick = None
+            self._today[s] = with_tick(self._prepared[s], tick, day, unit)
         self._index_closes = {code: with_tick(frame, ticks.get(QMT_INDEX[code]), day)['close']
                               for code, frame in self._prepared_index.items()}
 

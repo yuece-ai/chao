@@ -41,7 +41,7 @@ from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.market import Context, MissingInput
 from chao.orders import CAGE_RATE, Order, limit_price, plan_orders
-from chao.qmt_source import ALL_BARS, HISTORY_BARS, PROBE_STOCK, QmtMarket, probe, qmt_date, tick_amount_unit
+from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, number, text
 from chao.replay import BUY, ReplaySpec, replay
@@ -203,7 +203,6 @@ def build_run(C, namespace):
     run = Run(context, qmt_api(namespace), ledger, backtest)
     if not backtest:
         run.download = qmt_function(namespace, 'download_history_data')
-        market.tick_amount_unit = tick_amount_unit(C.get_full_tick([PROBE_STOCK])[PROBE_STOCK])
     return run, lines
 
 
@@ -385,6 +384,7 @@ def live_signals(run, date):
     started = time.time()
     market = run.context.market
     found, errors, without_tick = [], [], 0
+    market.bad_amount = []
     for batch in batches(run.universe, BATCH_LIVE):
         market.load_today(batch, date)
         behind = sorted(code for code, c in market.index_closes().items() if c.index[-1] != pd.Timestamp(date))
@@ -402,6 +402,9 @@ def live_signals(run, date):
     run.signals[date] = ([(sid, symbol, side) for _, sid, symbol, side in found if side == 'buy'], sells)
     print('chao: {} signals, {} skipped, {} without a tick today (suspended), {:.0f}s'.format(
         len(found), len(errors), without_tick, time.time() - started))
+    if market.bad_amount:
+        print('chao: warning: {} ticks have an amount in no known unit, so no bar today: {}'.format(
+            len(market.bad_amount), ' '.join(market.bad_amount[:20])))
 
 
 def guarded(step, *args):
@@ -468,8 +471,6 @@ def start(C):
     market = run.context.market
     for line in probe(C, market.sectors, market.end_time, not run.backtest, now().strftime('%Y-%m-%d %H:%M:%S')):
         print('chao: ' + line)
-    if not run.backtest:
-        print('chao: tick amount: {} units per yuan'.format(market.tick_amount_unit))
     RUN = run
 
 
