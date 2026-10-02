@@ -5,6 +5,7 @@ The ledger rules were derived from the fields of the TDX signal exports
 displayed cent.  TDX fills at the bar close without slippage and keeps every
 money value as float32; displayed values are rounded only for output.
 """
+import functools
 import math
 from typing import NamedTuple
 import numpy as np
@@ -12,6 +13,12 @@ import pandas as pd
 
 # Direction labels are the literal values of the TDX export's signal column.
 BUY, SELL, FLATTEN = '买开', '卖平', '平盘'
+
+
+@functools.lru_cache(maxsize=None)
+def day(text):
+    """'YYYY-MM-DD' -> Timestamp, parsed once per distinct date."""
+    return pd.Timestamp(text)
 
 
 def f32(value):
@@ -61,11 +68,18 @@ def sell_fill(position, close, spec):
 
 def replay(frame, signals, spec):
     """(events, summary) of one stock replayed with the TDX ledger rules."""
-    bars = frame.loc[spec.start:spec.end]
-    dates = bars.index
-    closes = bars['close'].values.tolist()
-    flags = signals.loc[dates]
-    buys, sells = flags['buy'].values.tolist(), flags['sell'].values.tolist()
+    if not signals.index.equals(frame.index):
+        raise ValueError('signals are not on the bars of the stock they replay')
+    # Positions, not .loc with date strings: pandas 0.22 (QMT) parses the
+    # strings on every call, which was 40% of a one-day backtest.
+    first, stop = frame.index.searchsorted(day(spec.start)), frame.index.searchsorted(day(spec.end), side='right')
+    buys = signals['buy'].values[first:stop]
+    if not buys.any():  # no position can open: nothing to replay
+        return [], {'closed_trades': 0, 'profitable_trades': 0, 'net_profit': 0.0, 'fees': 0,
+                    'max_drawdown': 0.0}
+    dates = frame.index[first:stop]
+    closes = frame['close'].values[first:stop].tolist()
+    buys, sells = buys.tolist(), signals['sell'].values[first:stop].tolist()
     cash = f32(spec.initial_cash); position = None; events = []
     equity = []
     for i, close in enumerate(closes):
