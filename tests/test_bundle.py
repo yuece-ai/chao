@@ -2,6 +2,7 @@ import importlib.util
 import io
 import shutil
 import subprocess
+from pathlib import Path
 from contextlib import redirect_stdout
 import pytest
 import chao.qmt_entry as entry
@@ -95,3 +96,13 @@ def test_bundle_is_pure_ascii_and_keeps_the_chinese_values():
     exec(compile(text, 'chao_strategy.py', 'exec'), namespace)
     assert namespace['BUY_KEY'] == '买入条件'
     assert any('震荡突破' in source for source in namespace['STRATEGY_FILES'].values())
+
+
+def test_bundle_globals_leave_qmt_names_alone():
+    # ContextInfo.start/end carry the backtest range; no global may shadow a QMT name.
+    import ast
+    tree = ast.parse(Path('qmt/chao_strategy.py').read_text())
+    names = {n.name for n in tree.body if isinstance(n, (ast.FunctionDef, ast.ClassDef))}
+    names |= {t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
+    reserved = {'start', 'end', 'capital', 'benchmark', 'period', 'stop', 'after_init', 'account', 'accountType'}
+    assert names & reserved == set()

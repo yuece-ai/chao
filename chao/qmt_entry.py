@@ -512,7 +512,7 @@ def context_attributes(C):
     return ' '.join(values)
 
 
-def start(C):
+def first_bar(C):
     """First handlebar call: decide the mode, build the run, probe the APIs."""
     global RUN
     run, lines = build_run(C, NAMESPACE)
@@ -536,7 +536,7 @@ def start(C):
 
 def handlebar(C):
     if RUN is None:
-        start(C)
+        first_bar(C)
     run = RUN
     if run.failed:
         return
