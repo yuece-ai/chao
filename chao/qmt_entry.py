@@ -333,9 +333,6 @@ def prepare_backtest(run, start, end, last_day):
     say('chao: backtest preparing {} stocks {} .. {}, in {} batches; progress every 10%'.format(
         len(universe), start, end, len(groups)))
     for number, batch in enumerate(groups, 1):
-        if number * 10 // len(groups) != (number - 1) * 10 // len(groups):
-            say('chao: backtest preparing {}/{} stocks, {:.0f}s'.format(
-                min(number * BATCH_BACKTEST, len(universe)), len(universe), time.time() - started))
         market.prefetch(batch, run.index_codes)
         if number == 1:  # fail before the long replay, not after it
             last = min(c.index[-1] for c in market.index_closes().values()).strftime('%Y-%m-%d')
@@ -354,6 +351,10 @@ def prepare_backtest(run, start, end, last_day):
                     side = 'buy' if e['direction'] == BUY else 'sell'
                     trades.setdefault(e['date'], []).append(Order(side, symbol, e['quantity'], sid))
                 events[sid] += rows
+        if number * 10 // len(groups) != (number - 1) * 10 // len(groups):  # after each 10%
+            say('chao: backtest preparing {}/{} stocks, {:.0f}s ({})'.format(
+                min(number * BATCH_BACKTEST, len(universe)), len(universe), time.time() - started,
+                ', '.join('{} {:.0f}s'.format(k, v) for k, v in sorted(market.seconds.items()))))
     latest = market.latest_ex_rights()
     if latest is not None and latest < pd.Timestamp(start):
         print('chao: warning: the latest ex-rights QMT returned is {}, before the backtest start; QMT may cut '

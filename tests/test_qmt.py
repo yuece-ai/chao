@@ -413,7 +413,8 @@ def test_live_orders_check_the_ledger_is_writable_at_startup(tmp_path):
 def test_backtest_preparation_reports_progress(test_strategy):
     log = run_backtest(backtest_client([10.0] * 300, start='2021-02-01 00:00:00'), FakeAccount(), [299])
     assert any(l.startswith('chao: backtest preparing 1 stocks 2021-02-01 .. ') for l in log)
-    assert 'chao: backtest preparing 1/1 stocks, 0s' in log
+    line = next(l for l in log if l.startswith('chao: backtest preparing 1/1 stocks, 0s ('))
+    assert 'get_market_data_ex' in line  # time per QMT data call
 
 
 def test_a_backtest_may_end_on_a_weekend(test_strategy):

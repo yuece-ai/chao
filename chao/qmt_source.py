@@ -17,6 +17,8 @@ Data is read in layers:
   only appends today's bar from the latest ticks.
 """
 import re
+import time
+from collections import Counter
 from decimal import Decimal, ROUND_HALF_UP
 from fractions import Fraction
 from typing import NamedTuple, Optional
@@ -156,6 +158,7 @@ class QmtMarket(MarketData):
         self.end_time = end_time       # 'YYYYMMDD' in a backtest, '' live
         self.adjust_until = pd.Timestamp(adjust_until)  # backtest: last ex-rights date that applies
         self.reset_static()
+        self.seconds = Counter()       # time spent in each QMT data call, for the progress log
         self._raw = {}                 # backtest: unadjusted bars of the current batch
         self._index_closes = None
         self._prepared, self._prepared_index = {}, {}   # live: adjusted history, index bars
@@ -170,7 +173,9 @@ class QmtMarket(MarketData):
         call it get_instrument_detail; older ones get_instrumentdetail."""
         if symbol not in self._details:
             read = getattr(self.C, 'get_instrument_detail', None) or self.C.get_instrumentdetail
+            started = time.time()
             self._details[symbol] = read(to_qmt(symbol)) or {}
+            self.seconds['get_instrument_detail'] += time.time() - started
         return self._details[symbol]
 
     def price_limits(self, symbol):
@@ -196,10 +201,18 @@ class QmtMarket(MarketData):
         events = [e.date for es in self._events.values() for e in es]
         return max(events) if events else None
 
+    def _read_events(self, symbol):
+        started = time.time()
+        events = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
+        self.seconds['get_divid_factors'] += time.time() - started
+        return events
+
     def _fetch(self, qmt_codes):
+        started = time.time()
         data = self.C.get_market_data_ex(BAR_FIELDS, qmt_codes, period='1d', end_time=self.end_time,
                                          count=self.history_bars, dividend_type='none',
                                          fill_data=False, subscribe=False)
+        self.seconds['get_market_data_ex'] += time.time() - started
         frames = {}
         for code in qmt_codes:
             frame = data.get(code)
@@ -294,14 +307,14 @@ class QmtMarket(MarketData):
     def load_static(self, symbol):
         """Read and cache the per-stock data that does not change intraday."""
         if symbol not in self._events:
-            self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
+            self._events[symbol] = self._read_events(symbol)
         self.detail(symbol)
         self.total_shares(symbol)
 
     def ex_rights(self, symbol):
         """Every ex-rights event of a stock, oldest first (cached for the day)."""
         if symbol not in self._events:
-            self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
+            self._events[symbol] = self._read_events(symbol)
         return self._events[symbol]
 
     def bars(self, symbol):
@@ -312,7 +325,7 @@ class QmtMarket(MarketData):
             return frame
         raw = self.raw_bars(symbol)
         if symbol not in self._events:
-            self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
+            self._events[symbol] = self._read_events(symbol)
         # Ex-rights up to the data's last day, also those after the backtest
         # end: a TDX backtest adjusts as of the day it runs. Cutting at the
         # end changed 2024H1 signals (strategy 3 traded 002521, TDX did not);
