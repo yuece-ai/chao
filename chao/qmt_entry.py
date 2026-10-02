@@ -350,8 +350,12 @@ def prepare_backtest(run, start, end, last_day):
     for sid in sorted(summaries):
         print('chao: tdx ' + summary_line(sid, summaries[sid]))
     if settings.report_path:
-        for path in write_exports(settings.report_path, events, stock_names):
-            print('chao: wrote ' + path)
+        try:
+            for path in write_exports(settings.report_path, events, stock_names):
+                say('chao: wrote ' + path)
+        except OSError as exc:  # the trade lists are a copy for comparison; the backtest itself goes on
+            say('chao: warning: cannot write the trade lists to {}: {}: {}'.format(
+                settings.report_path, type(exc).__name__, exc))
     same_day = sorted({(o.symbol, d) for d, orders in trades.items() for o in orders if o.side == 'sell'
                        and any(b.side == 'buy' and b.symbol == o.symbol and b.strategy == o.strategy for b in orders)})
     for symbol, day in same_day:

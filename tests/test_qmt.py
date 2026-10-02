@@ -417,3 +417,13 @@ def test_a_backtest_may_end_on_a_weekend(test_strategy):
     log = run_backtest(C, FakeAccount(), [297])
     assert any(line.startswith('chao: backtest ready') for line in log)
     assert entry.last_chart_day(C, '2021-02-28') == '2021-02-23' and entry.last_chart_day(C, '2020-01-01') == '2020-01-01'
+
+
+def test_a_forbidden_report_folder_does_not_stop_the_backtest(test_strategy, monkeypatch):
+    def forbidden(*args):
+        raise PermissionError('Foribdden FileIO')
+    monkeypatch.setattr(entry, 'write_exports', forbidden)
+    C = backtest_client([10.0] * 297 + [11.0, 10.0, 10.0], start='2021-02-01 00:00:00')
+    log = run_backtest(C, FakeAccount(), [297], report_path='D:\\chao\\report')
+    assert any('cannot write the trade lists' in line for line in log)
+    assert any(line.startswith('chao: backtest ready') for line in log)
