@@ -69,6 +69,7 @@ def test_qmt_adapter_reproduces_the_tdx_path():
         _, sig_q = stock_signals(strategies, qmt, symbol)
         _, sig_t = stock_signals(strategies, tdx, symbol)
         for sid in sig_t:
-            pd.testing.assert_frame_equal(sig_q[sid], sig_t[sid], check_names=False)
-            buys += int(sig_t[sid]['buy'].sum())
+            q, t = sig_q[sid], sig_t[sid]
+            assert q.dates.equals(t.dates) and (q.buy == t.buy).all() and (q.sell == t.sell).all()
+            buys += int(t.buy.sum())
     assert buys > 20  # 48 today; the sample must exercise buy signals, not only the ST filter

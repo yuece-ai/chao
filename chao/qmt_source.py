@@ -122,13 +122,36 @@ def tick_amount_unit(tick):
     return None
 
 
+def tick_row(tick, day, amount_unit):
+    """Today's bar [[open, high, low, close, amount]] from a tick, or None when
+    the tick is not from today or has not traded."""
+    if not tick or float(tick.get('lastPrice') or 0) <= 0 or tick_date(tick) != day:
+        return None
+    return np.array([[float(tick[TICK_FIELDS[k]]) / (amount_unit if k == 'amount' else 1) for k in BAR_FIELDS]])
+
+
+class Prepared(NamedTuple):
+    """Live: a stock's adjusted history before today, plus a copy with one
+    spare row and today's date, so today's bar is a row write, not a new
+    frame (7x faster under QMT's pandas 0.22)."""
+    history: pd.DataFrame
+    slot: np.ndarray            # history values and one row for today
+    index: pd.DatetimeIndex     # history dates and today
+
+    def with_today(self, row):
+        if row is None:
+            return self.history
+        self.slot[-1] = row[0]
+        return pd.DataFrame(self.slot, index=self.index, columns=BAR_FIELDS, copy=False)
+
+
 def with_tick(frame, tick, day, amount_unit=1):
     """frame with today's bar set from a get_full_tick tick, if the tick is
     from today and has traded; otherwise frame unchanged (None stays None).
     The amount is divided by amount_unit to give yuan, as in daily bars."""
-    if not tick or float(tick.get('lastPrice') or 0) <= 0 or tick_date(tick) != day:
+    row = tick_row(tick, day, amount_unit)
+    if row is None:
         return frame
-    row = np.array([[float(tick[TICK_FIELDS[k]]) / (amount_unit if k == 'amount' else 1) for k in BAR_FIELDS]])
     if frame is None:
         return pd.DataFrame(row, index=pd.DatetimeIndex([day]), columns=BAR_FIELDS)
     keep = frame.index < day
@@ -265,7 +288,9 @@ class QmtMarket(MarketData):
                 events = [e for e in self.ex_rights(symbol) if e.date <= day]
                 adjusted = forward_adjust(frame, events)
                 adjusted['amount'] = frame['amount']
-                self._prepared[symbol] = adjusted
+                history = adjusted[BAR_FIELDS]
+                self._prepared[symbol] = Prepared(history, np.vstack([history.values, np.zeros((1, len(BAR_FIELDS)))]),
+                                                  history.index.append(pd.DatetimeIndex([day])))
                 last[symbol] = frame.index[-1]
         return last
 
@@ -283,7 +308,7 @@ class QmtMarket(MarketData):
             if unit is None:  # no bar today rather than a wrong AMO
                 self.bad_amount.append(s)
                 tick = None
-            self._today[s] = with_tick(self._prepared[s], tick, day, unit)
+            self._today[s] = self._prepared[s].with_today(tick_row(tick, day, unit) if tick else None)
         self._index_closes = {code: with_tick(frame, ticks.get(QMT_INDEX[code]), day)['close']
                               for code, frame in self._prepared_index.items()}
 

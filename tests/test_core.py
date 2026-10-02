@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 import re
 from pathlib import Path
@@ -6,6 +7,7 @@ from chao.formulas import ASSIGNMENT,evaluate,load_strategies,parse
 from chao.indicators import MA,REF,HHV,LLV
 from chao.reference import cents, score
 from chao.replay import ReplaySpec, replay
+from chao.signals import Signals
 
 def test_boolean_precedence():
  x=pd.Series([1,2,3]); result=evaluate(parse('X>1 AND X<3 OR X=1'),{'X':x})
@@ -36,7 +38,7 @@ def test_score_keeps_codes():
 def two_bar_replay(buy_close, sell_close):
  dates=pd.date_range('2020-01-01',periods=2)
  frame=pd.DataFrame({'close':[buy_close,sell_close]},index=dates)
- sig=pd.DataFrame({'buy':[True,False],'sell':[False,True]},index=dates)
+ sig=Signals(dates,np.array([True,False]),np.array([False,True]))
  spec=ReplaySpec('2020-01-01','2020-01-02',1000000.0,0.0005,0.0003)
  return replay(frame,sig,spec)
 
@@ -64,6 +66,6 @@ def test_buy_and_sell_on_the_same_bar():
  # Strategy 5, 300475 on 2020-02-17: both conditions hold, TDX buys then sells.
  dates=pd.date_range('2020-01-01',periods=2)
  frame=pd.DataFrame({'close':[7.61,7.0]},index=dates)
- sig=pd.DataFrame({'buy':[True,False],'sell':[True,True]},index=dates)
+ sig=Signals(dates,np.array([True,False]),np.array([True,True]))
  events,_=replay(frame,sig,ReplaySpec('2020-01-01','2020-01-02',1000000.0,0.0005,0.0003))
  assert [(e['date'],e['direction']) for e in events]==[('2020-01-01','买开'),('2020-01-01','卖平')]

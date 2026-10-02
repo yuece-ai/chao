@@ -31,6 +31,15 @@ def on_dates(series, dates):
     return np.where(hit, series.values[clipped], np.nan)
 
 
+class Signals(NamedTuple):
+    """One strategy on one stock: buy and sell flags on the stock's bars.
+    Plain arrays, not a DataFrame: building ~17,000 small DataFrames per
+    run was most of the time QMT's pandas 0.22 spent on signals."""
+    dates: Any            # DatetimeIndex of the stock's bars
+    buy: Any              # bool ndarray, one per bar
+    sell: Any
+
+
 class PanelView(NamedTuple):
     rows: int
     dates: List[Any]      # each stock's own bar dates (bottom-aligned in the panel)
@@ -65,7 +74,7 @@ def panel_signals(strategies, market, symbols):
     """Signals of the strategies on a batch of stocks.
 
     Returns (bars {symbol: DataFrame}, signals {symbol: {strategy id:
-    buy/sell DataFrame}}, errors [(strategy, symbol, message)]). Stocks with
+    Signals}}, errors [(strategy, symbol, message)]). Stocks with
     fewer than MIN_BARS bars get no signals.
     """
     bars, errors = {}, []
@@ -94,13 +103,12 @@ def panel_signals(strategies, market, symbols):
                 errors.append((strategy.id, symbol, 'MissingInput: FINANCE(1) needs a share-capital series'))
                 continue
             n = len(dates[j])
-            result[symbol][strategy.id] = pd.DataFrame({'buy': buy[rows - n:, j], 'sell': sell[rows - n:, j]},
-                                                       index=dates[j])
+            result[symbol][strategy.id] = Signals(dates[j], buy[rows - n:, j], sell[rows - n:, j])
     return bars, result, sorted(errors)
 
 
 def stock_signals(strategies, market, symbol):
-    """(bars, {strategy id: buy/sell DataFrame}) for one stock; raises the
+    """(bars, {strategy id: Signals}) for one stock; raises the
     first missing-data error, as the per-stock replay expects."""
     bars, result, errors = panel_signals(strategies, market, [symbol])
     if errors:
@@ -131,7 +139,7 @@ def strategies_for(context, symbol):
 
 
 def history_signals(context, symbols):
-    """({symbol: {strategy id: buy/sell DataFrame}}, [(strategy, symbol, error)])
+    """({symbol: {strategy id: Signals}}, [(strategy, symbol, error)])
     for every enabled strategy on a batch of stocks."""
     _, result, errors = panel_signals([s for _, s in sorted(context.strategies.items())],
                                       context.market, symbols)
@@ -147,8 +155,7 @@ def last_bar_signals(context, symbols):
     found = []
     for symbol, by_strategy in result.items():
         for sid, sig in by_strategy.items():
-            last = sig.iloc[-1]
-            for side in ('buy', 'sell'):
-                if last[side]:
-                    found.append((sig.index[-1].strftime('%Y-%m-%d'), sid, symbol, side))
+            for side, flags in (('buy', sig.buy), ('sell', sig.sell)):
+                if flags[-1]:
+                    found.append((sig.dates[-1].strftime('%Y-%m-%d'), sid, symbol, side))
     return sorted(found), errors

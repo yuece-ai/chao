@@ -163,7 +163,8 @@ def test_backtest_mirrors_the_tdx_ledger_into_qmt(test_strategy, tmp_path):
     # The trades are exactly those of the TDX ledger for this stock.
     frame = market_with(closes)['000001.SZ']
     frame.index = pd.to_datetime(frame.index)
-    sig = pd.DataFrame({'buy': frame.close > frame.close.shift(1), 'sell': frame.close < frame.close.shift(1)})
+    from chao.signals import Signals
+    sig = Signals(frame.index, (frame.close > frame.close.shift(1)).values, (frame.close < frame.close.shift(1)).values)
     events, _ = replay(frame, sig, ReplaySpec('2021-02-01', '2021-02-23', 1e6, 0.0005, 0.0003))
     assert [e['direction'] for e in events] == ['买开', '卖平']
     shares = events[0]['quantity']
