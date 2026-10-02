@@ -460,12 +460,36 @@ def journal_run(directory, C):
         print('chao: warning: cannot write {}: {}'.format(os.path.join(directory, 'runs.log'), exc))
 
 
+def file_access(report_path):
+    """Which folders this client lets a strategy write: it raised
+    'Foribdden FileIO' for D:\\chao\\report, and the ledger needs one."""
+    import tempfile
+    base = os.path.dirname(os.getcwd())
+    folders = [report_path, os.getcwd(), base, os.path.join(base, 'python'), os.path.join(base, 'userdata'),
+               os.path.join(base, 'userdata_mini'), tempfile.gettempdir(), os.path.expanduser('~')]
+    found = []
+    for folder in [f for f in folders if f]:
+        probe_file = os.path.join(folder, 'chao-write-test.txt')
+        try:
+            with open(probe_file, 'w') as out:
+                out.write('ok')
+            with open(probe_file) as back:
+                back.read()
+            os.remove(probe_file)
+            found.append('{} ok'.format(folder))
+        except Exception as exc:  # each folder is reported, none is chosen here
+            found.append('{} {}: {}'.format(folder, type(exc).__name__, exc))
+    return found
+
+
 def init_with(C, namespace):
     global RUN, NAMESPACE
     check_environment(C, namespace)
     settings, _ = load_settings(namespace)
     RUN, NAMESPACE = None, namespace
     print('chao: init do_back_test={} mode={}'.format(getattr(C, 'do_back_test', None), settings.mode))
+    for line in file_access(settings.report_path):
+        print('chao: file access ' + line)
     if settings.report_path:
         journal_run(settings.report_path, C)
     if is_backtest(settings, C):

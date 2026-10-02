@@ -409,3 +409,9 @@ def test_every_init_is_journaled_in_the_report_path(test_strategy, tmp_path):
             entry.init_with(C, FakeAccount().namespace(account_id='testS', report_path=str(tmp_path)))
     lines = (tmp_path / 'runs.log').read_text(encoding='utf-8').splitlines()
     assert ['do_back_test=False' in lines[0], 'do_back_test=True' in lines[1]] == [True, True]
+
+
+def test_file_access_reports_each_folder(tmp_path):
+    lines = entry.file_access(str(tmp_path / 'missing'))
+    assert lines[0].startswith(str(tmp_path / 'missing') + ' FileNotFoundError')
+    assert any(line.endswith(' ok') for line in lines) and not list(tmp_path.iterdir())
