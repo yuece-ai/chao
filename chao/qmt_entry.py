@@ -41,7 +41,7 @@ from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.market import Context, MissingInput
 from chao.orders import CAGE_RATE, Order, limit_price, plan_orders
-from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date
+from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date, short
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, number, text
 from chao.replay import BUY, ReplaySpec, replay
@@ -453,6 +453,22 @@ def init_with(C, namespace):
         C.capital = BACKTEST_CAPITAL  # capital can only be set in init; every TDX trade has its own tdx_cash
 
 
+def context_attributes(C):
+    """Every plain ContextInfo attribute QMT sets, to see how this client
+    marks a backtest (do_back_test, start and end disagreed with the GUI)."""
+    values = []
+    for name in sorted(dir(C)):
+        if name.startswith('_'):
+            continue
+        try:
+            value = getattr(C, name)
+        except Exception as exc:  # a property may fail outside its mode; show that too
+            value = '<{}>'.format(type(exc).__name__)
+        if not callable(value):
+            values.append('{}={}'.format(name, ' '.join(short(value).split())[:60]))
+    return ' '.join(values)
+
+
 def start(C):
     """First handlebar call: decide the mode, build the run, probe the APIs."""
     global RUN
@@ -465,6 +481,7 @@ def start(C):
         getattr(C, 'start', None), getattr(C, 'end', None), C.period,
         qmt_date(C.get_bar_timetag(C.barpos)).date(), qmt_date(C.get_bar_timetag(C.time_tick_size - 1)).date()
         if getattr(C, 'time_tick_size', 0) else '?'))
+    print('chao: ContextInfo ' + context_attributes(C))
     if run.backtest and getattr(C, 'capital', None) != BACKTEST_CAPITAL:
         print("chao: warning: the backtest capital was not raised in init; set it high in QMT's backtest "
               "settings, or set mode='backtest', so no mirrored trade is short of cash")

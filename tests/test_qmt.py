@@ -392,3 +392,10 @@ def test_tick_amount_unit_is_read_from_the_tick():
     assert tick_amount_unit(dict(seen, amount=0.0, pvolume=0)) == 1  # nothing traded
     bar = with_tick(None, seen, pd.Timestamp('2026-09-30'), 100)
     assert bar['amount'].tolist() == [1386209937.0]
+
+
+def test_startup_lists_the_context_attributes(test_strategy):
+    C = backtest_client([10.0] * 300, start='2021-02-01 00:00:00')
+    log = run_backtest(C, FakeAccount(), [299])
+    line = next(l for l in log if l.startswith('chao: ContextInfo '))
+    assert 'do_back_test=True' in line and "start='2021-02-01 00:00:00'" in line
