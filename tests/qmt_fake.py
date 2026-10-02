@@ -93,9 +93,14 @@ class FakeAccount:
     def download_history_data(self, code, period, start, end):
         self.downloads.append((code, period, start, end))
 
-    def namespace(self, **gui):
-        return dict(gui, passorder=self.passorder, get_trade_detail_data=self.get_trade_detail_data,
-                    download_history_data=self.download_history_data)
+    def namespace(self, account='LIVE', **gui):
+        """The strategy's globals; QMT injects `account` only under 模型交易
+        (pass account=None for a strategy-editor run)."""
+        found = dict(gui, passorder=self.passorder, get_trade_detail_data=self.get_trade_detail_data,
+                     download_history_data=self.download_history_data)
+        if account:
+            found['account'] = account
+        return found
 
 
 def ticks_from(bars, day):

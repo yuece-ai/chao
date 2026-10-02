@@ -20,13 +20,14 @@ def run_strategy(module):
     module.CONFIG.update(prepare_time='00:00', signal_time='00:00', order_time='00:00', account_id='A1')
     module.passorder, module.get_trade_detail_data = account.passorder, account.get_trade_detail_data
     module.download_history_data = account.download_history_data
+    module.account = 'A1'  # 模型交易 injects the selected account: a live run
     try:
         with redirect_stdout(io.StringIO()) as out:
             module.init(C)
             module.handlebar(C)
     finally:
         module.CONFIG.clear(); module.CONFIG.update(saved)
-        del module.passorder, module.get_trade_detail_data, module.download_history_data
+        del module.passorder, module.get_trade_detail_data, module.download_history_data, module.account
     assert account.orders == []
     return out.getvalue()
 
