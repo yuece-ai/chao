@@ -208,8 +208,8 @@ def build_run(C, namespace):
                        backtest_end(C) if backtest else '', last_bar)
     context = Context(settings, market, {sid: selected[sid] for sid in settings.strategies})
     ledger = Ledger('' if backtest else settings.ledger_path)
-    if not backtest and not settings.dry_run:
-        ledger.save()  # QMT's sandbox forbids most folders: fail now, not after the first buy
+    if not backtest and settings.ledger_path:
+        ledger.check_persistence()  # also in a dry run, so the first live day already proves it
     run = Run(context, qmt_api(namespace), ledger, backtest)
     if not backtest:
         run.download = qmt_function(namespace, 'download_history_data')

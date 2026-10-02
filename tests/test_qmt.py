@@ -405,6 +405,9 @@ def test_live_orders_check_the_ledger_is_writable_at_startup(tmp_path):
     entry.build_run(FakeContextInfo({}), FakeAccount().namespace(
         account_id='A1', dry_run=0, ledger_path=str(tmp_path / 'ledger.json')))
     assert (tmp_path / 'ledger.json').read_text() == '{}'
+    (tmp_path / 'ledger.json').write_text('{"SH600000": {"selling": false, "strategy": 1}}')
+    entry.build_run(FakeContextInfo({}), FakeAccount().namespace(account_id='A1', ledger_path=str(tmp_path / 'ledger.json')))
+    assert '"SH600000"' in (tmp_path / 'ledger.json').read_text()  # a dry run checks too and keeps the entries
 
 
 def test_backtest_preparation_reports_progress(test_strategy):

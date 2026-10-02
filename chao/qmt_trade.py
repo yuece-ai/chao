@@ -90,3 +90,14 @@ class Ledger:
     def save(self):
         if self.path:
             self.path.write_text(json.dumps(self.entries, sort_keys=True))
+
+    def check_persistence(self):
+        """Write the file twice and read it back. Every update replaces the
+        file, and QMT's sandbox refuses some file IO (it refused D:\\chao in
+        init); a refusal must stop the run before a buy, not lose the record
+        of who owns a position after it."""
+        self.save()
+        self.save()
+        back = json.loads(self.path.read_text())
+        if back != self.entries:
+            raise OSError('the ledger {} read back {!r}, not what was written'.format(self.path, back))
