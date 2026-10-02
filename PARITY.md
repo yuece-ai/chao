@@ -22,6 +22,12 @@ for three things:
 | 7 | 600 | 598 | 2 | 2 | 590 |
 | **Total** | **15,118** | **15,112 (99.96%)** | **6** | **8** | **15,069 of 15,112** |
 
+The same counts hold over the whole market the TDX backtest scanned
+(`run_replay.py` without `--reference-only`, 2026-10-02): the per-stock
+summary exports list 5,223 stocks (5,219 for strategy 6), traded or not,
+and give their names for NAMELIKE. The ~2,200 stocks with 0 TDX trades
+produce 0 trades here too; no extra row comes from them.
+
 A signal match means code, date and direction agree. An accounting match
 means quantity, price, amount, fee, profit and available cash all agree
 with the export at the displayed cent. This is not 100%. Every remaining

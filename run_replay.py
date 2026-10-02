@@ -13,7 +13,7 @@ from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.gbbq import load_gbbq
 from chao.replay import ReplaySpec, replay
-from chao.reference import read_references, score
+from chao.reference import read_references, read_universe, score
 from chao.settings import REQUIRED, ConfigError, Field, describe, id_list, integer, load, number, path_map, text
 
 G = {}
@@ -91,7 +91,8 @@ def main():
         return
     settings = ReplaySettings(**loaded.values)
     refs = read_references(settings.reference_root)
-    names = {r['code']: r['name'] for rows in refs.values() for r in rows}
+    names = {code: name for stocks in read_universe(settings.reference_root).values() for code, name in stocks.items()}
+    names.update({r['code']: r['name'] for rows in refs.values() for r in rows})
     if args.reference_only:
         symbols = sorted({equity_symbol(r['code']) for rows in refs.values() for r in rows})
     else:

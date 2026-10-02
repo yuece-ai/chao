@@ -24,6 +24,19 @@ def read_references(root):
     return result
 
 
+def read_universe(root):
+    """{strategy id: {code: name}} from the per-stock summary exports
+    (策略N-名称.txt): every stock the TDX backtest scanned, traded or not."""
+    result = {}
+    for path in Path(root).glob('策略[0-9]-*.txt'):
+        if path.name.endswith('交易信号.txt'):
+            continue
+        with path.open(encoding='utf-8-sig') as f:
+            rows = [row for row in csv.DictReader(f, delimiter='\t') if row['品种代码'].isdigit()]
+        result[int(path.name[2])] = {row['品种代码']: row['品种名称'] for row in rows}
+    return result
+
+
 def cents(value):
     """Round a stored value the way the export displays it."""
     return float(Decimal(repr(float(value))).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP))
