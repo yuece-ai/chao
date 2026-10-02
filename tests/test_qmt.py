@@ -44,8 +44,8 @@ def test_qmt_market_adjusts_bars_and_keeps_traded_closes():
     assert market.name('SZ000001') == 'PING AN' and market.name('SH600036') is None
     with pytest.raises(ValueError, match='no daily bars from QMT for 600036.SH'):
         market.bars('SH600036')
-    assert market.total_shares('SZ000001') == {'1990-01-01': 1e9}  # today's TotalVolume
-    assert market.total_shares('SH600036') == {}  # no TotalVolume: FINANCE(1) is NaN, so no buy
+    assert market.total_shares('SZ000001') == {'2019-01-01': 1e9}
+    assert market.total_shares('SH600036') == {}  # no share rows: FINANCE(1) is NaN, so no buy
 
 
 def test_gui_beats_config_beats_default(monkeypatch):
@@ -352,13 +352,18 @@ def test_price_margin_must_stay_inside_the_price_cage():
         entry.build_run(FakeContextInfo({}), FakeAccount().namespace(price_margin=0.03))
 
 
-def test_total_shares_come_from_the_contract_details():
-    C = FakeContextInfo({}, backtest=True)
-    C.shares['600000.SH'] = pd.Series([float('nan'), 3e10], index=['20200101', '20200102'])
-    probe(C, (), '20200102', False, '2021-02-23 14:00:00')  # the fake has no get_financial_data
-    C.shares['600000.SH'] = pd.Series([float('nan')], index=['20200101'])
-    with pytest.raises(ValueError, match='TotalVolume, the total shares FINANCE'):
-        probe(C, (), '20200102', False, '2021-02-23 14:00:00')
+def test_daily_share_rows_collapse_to_changes():
+    from chao.qmt_source import share_steps
+    daily = pd.Series([1e9, 1e9, 1e9, 2e9, 2e9], index=['20200101', '20200102', '20200103', '20200106', '20200107'])
+    assert share_steps(daily) == {'2020-01-01': 1e9, '2020-01-06': 2e9}
+
+
+def test_missing_financial_data_stops_at_startup():
+    C = FakeContextInfo({})
+    C.shares['600000.SH'] = pd.Series([float('nan')] * 3, index=['20200101', '20200102', '20200103'])
+    entry.init_with(C, FakeAccount().namespace())
+    with pytest.raises(ValueError, match='all are NaN, so download 财务数据'):
+        entry.handlebar(C)
 
 
 def test_mode_is_decided_at_the_first_bar(test_strategy):
