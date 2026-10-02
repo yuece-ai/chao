@@ -401,3 +401,9 @@ def test_live_orders_check_the_ledger_is_writable_at_startup(tmp_path):
     entry.build_run(FakeContextInfo({}), FakeAccount().namespace(
         account_id='A1', dry_run=0, ledger_path=str(tmp_path / 'ledger.json')))
     assert (tmp_path / 'ledger.json').read_text() == '{}'
+
+
+def test_backtest_preparation_reports_progress(test_strategy):
+    log = run_backtest(backtest_client([10.0] * 300, start='2021-02-01 00:00:00'), FakeAccount(), [299])
+    assert any(l.startswith('chao: backtest preparing 1 stocks 2021-02-01 .. ') for l in log)
+    assert 'chao: backtest preparing 1/1 stocks, 0s' in log

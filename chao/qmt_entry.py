@@ -35,6 +35,7 @@ panel holds numbers only, so lists and text belong in CONFIG.
 import builtins
 import datetime
 import os
+import sys
 import time
 from collections import namedtuple
 import pandas as pd
@@ -279,6 +280,12 @@ def live_buys(C, run, date):
     send(C, run, date, orders, limits, not settings.dry_run)
 
 
+def say(line):
+    """print, flushed at once: a long step stays visibly alive in QMT's log."""
+    print(line)
+    sys.stdout.flush()
+
+
 def prepare_backtest(run, start, end):
     """Replay every (strategy, stock) pair with the TDX ledger over
     [start, end], write the TDX-layout trade lists and queue the trades."""
@@ -289,7 +296,14 @@ def prepare_backtest(run, start, end):
     events = {sid: [] for sid in run.context.strategies}
     summaries = {sid: [] for sid in run.context.strategies}
     stock_names, errors, trades = {}, [], {}
-    for batch in batches(market.universe(), BATCH_BACKTEST):
+    universe = market.universe()
+    groups = batches(universe, BATCH_BACKTEST)
+    say('chao: backtest preparing {} stocks {} .. {}, in {} batches; progress every 10%'.format(
+        len(universe), start, end, len(groups)))
+    for number, batch in enumerate(groups, 1):
+        if number * 10 // len(groups) != (number - 1) * 10 // len(groups):
+            say('chao: backtest preparing {}/{} stocks, {:.0f}s'.format(
+                min(number * BATCH_BACKTEST, len(universe)), len(universe), time.time() - started))
         market.prefetch(batch, run.index_codes)
         bars, results, bad = panel_signals(strategies, market, batch)
         errors += bad
@@ -434,7 +448,6 @@ REQUIRED_CALLS = ['get_market_data_ex', 'get_divid_factors', 'get_stock_list_in_
 
 def check_environment(C, namespace):
     """Print the client environment and fail fast on a missing API."""
-    import sys
     import numpy as np
     print('chao: python {} pandas {} numpy {}'.format(sys.version.split()[0], pd.__version__, np.__version__))
     missing = [m for m in REQUIRED_CALLS if not callable(getattr(C, m, None))]
