@@ -65,7 +65,7 @@ Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
     `tdx_cash`, fills at the close, TDX fees (0.05% buy, 0.03% sell), float32
     money, buy before sell on one bar, flatten on the last bar.
   - The trades go to `report_path` in the TDX export layout, one
-    `strategy-<id>-signals.tsv` per strategy, with a summary line per
+    `strategy-<id>-signals-<run time>.tsv` per strategy, with a summary line per
     strategy in the console. Compare them with
     `scripts/compare_tdx_report.py --report <dir>`.
   - Each bar then sends the same trades (date, side, shares) to `passorder`

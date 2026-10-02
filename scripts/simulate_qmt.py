@@ -16,6 +16,7 @@ from chao.gbbq import load_gbbq
 from chao.market import equity_symbol
 from chao.qmt_source import to_qmt
 from chao.reference import read_references, score
+from chao.tdx_report import latest_exports
 from scripts.bundle_qmt import bundle
 from scripts.compare_tdx_report import read_report
 from tests.qmt_fake import Obj
@@ -115,8 +116,7 @@ def main():
         if 'chao: tdx' in line or 'same bar' in line or 'warning' in line:
             print('  ' + line)
     inside = lambda rows: [r for r in rows if args.start <= r['date'] <= args.end]
-    for path in sorted(report.glob('strategy-*-signals.tsv')):
-        sid = int(path.stem.split('-')[1])
+    for sid, path in sorted(latest_exports(str(report)).items()):
         s = score(inside(refs.get(sid, [])), inside(read_report(path)))
         print('  strategy {}: TDX rows {} matched {} accounting {}'.format(
             sid, s['expected'], s['matched'], s['accounting_matched']))

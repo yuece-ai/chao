@@ -368,7 +368,8 @@ def prepare_backtest(run, start, end, last_day):
         print('chao: tdx ' + summary_line(sid, summaries[sid]))
     if settings.report_path:
         try:
-            for path in write_exports(settings.report_path, events, stock_names):
+            stamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+            for path in write_exports(settings.report_path, events, stock_names, stamp):
                 say('chao: wrote ' + path)
         except OSError as exc:  # the trade lists are a copy for comparison; the backtest itself goes on
             say('chao: warning: cannot write the trade lists to {}: {}: {}'.format(

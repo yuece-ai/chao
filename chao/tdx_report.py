@@ -27,17 +27,29 @@ def export_lines(events, names):
     return lines
 
 
-def write_exports(directory, events_by_strategy, names):
-    """One file per strategy: strategy-<id>-signals.tsv (UTF-8)."""
+def write_exports(directory, events_by_strategy, names, stamp):
+    """One new file per strategy and run: strategy-<id>-signals-<stamp>.tsv
+    (UTF-8). QMT lets a strategy create files but did not let a rerun
+    replace them, so a run never writes over an earlier one."""
     if not os.path.isdir(directory):  # QMT's sandbox may forbid even an existing folder's mkdir
         os.makedirs(directory)
     paths = []
     for sid, events in sorted(events_by_strategy.items()):
-        path = os.path.join(directory, 'strategy-{}-signals.tsv'.format(sid))
+        path = os.path.join(directory, 'strategy-{}-signals-{}.tsv'.format(sid, stamp))
         with open(path, 'w', encoding='utf-8') as out:
             out.write('\n'.join(export_lines(events, names)) + '\n')
         paths.append(path)
     return paths
+
+
+def latest_exports(directory):
+    """{strategy id: path of its newest strategy-<id>-signals-<stamp>.tsv}."""
+    latest = {}
+    for name in sorted(os.listdir(directory)):  # stamps sort by time
+        parts = name.split('-')
+        if name.endswith('.tsv') and len(parts) >= 3 and parts[0] == 'strategy' and parts[2].startswith('signals'):
+            latest[int(parts[1])] = os.path.join(directory, name)
+    return latest
 
 
 def summary_line(sid, summaries):

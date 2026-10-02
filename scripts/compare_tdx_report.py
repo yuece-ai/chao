@@ -7,6 +7,7 @@ and how many of those also match every accounting field.
 import argparse, csv, json
 from pathlib import Path
 from chao.reference import read_references, score
+from chao.tdx_report import latest_exports
 
 
 def read_report(path):
@@ -28,8 +29,7 @@ def main():
     inside = lambda rows: [r for r in rows if args.start <= r['date'] <= args.end]
     refs = {sid: inside(rows) for sid, rows in read_references(args.reference_root).items()}
     result = {}
-    for path in sorted(Path(args.report).glob('strategy-*-signals.tsv')):
-        sid = int(path.stem.split('-')[1])
+    for sid, path in sorted(latest_exports(args.report).items()):
         s = score(refs.get(sid, []), inside(read_report(path)))
         result[sid] = {'expected': s['expected'], 'matched': s['matched'], 'missing': len(s['missing']),
                        'extra': len(s['extra']), 'accounting_matched': s['accounting_matched']}

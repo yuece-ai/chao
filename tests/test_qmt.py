@@ -1,3 +1,4 @@
+from pathlib import Path
 import datetime
 import io
 import json
@@ -168,7 +169,8 @@ def test_backtest_mirrors_the_tdx_ledger_into_qmt(test_strategy, tmp_path):
     shares = events[0]['quantity']
     assert account.orders == [(23, 1101, 'testS', '000001.SZ', 5, -1, shares, 'chao', 2, 'chao-s1'),
                               (24, 1101, 'testS', '000001.SZ', 5, -1, shares, 'chao', 2, 'chao-s1')]
-    lines = (tmp_path / 'strategy-1-signals.tsv').read_text(encoding='utf-8').splitlines()
+    from chao.tdx_report import latest_exports
+    lines = Path(latest_exports(str(tmp_path))[1]).read_text(encoding='utf-8').splitlines()
     assert lines[1].split('\t')[:6] == ['000001', 'X', '2021-02-19 00:00', '买开', '11.00', str(shares)]
     assert any(line.startswith('chao: tdx strategy=1 trades=1 wins=0') for line in log)
 
@@ -436,3 +438,12 @@ def test_backtest_bars_are_adjusted_as_of_today():
     market = QmtMarket(C, (), 10, '20200101')
     market.prefetch(['SZ000001'], ['999999'])
     assert market.bars('SZ000001').close.tolist() == [9.5]
+
+
+def test_each_run_writes_new_report_files_and_readers_take_the_newest(tmp_path):
+    from chao.tdx_report import latest_exports, write_exports
+    write_exports(str(tmp_path), {3: []}, {}, '20261002-100000')
+    write_exports(str(tmp_path), {3: []}, {}, '20261002-110000')
+    assert sorted(p.name for p in tmp_path.iterdir()) == ['strategy-3-signals-20261002-100000.tsv',
+                                                          'strategy-3-signals-20261002-110000.tsv']
+    assert latest_exports(str(tmp_path)) == {3: str(tmp_path / 'strategy-3-signals-20261002-110000.tsv')}
