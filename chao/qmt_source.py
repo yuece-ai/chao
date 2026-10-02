@@ -312,8 +312,10 @@ class QmtMarket(MarketData):
         raw = self.raw_bars(symbol)
         if symbol not in self._events:
             self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
-        events = [e for e in self._events[symbol] if e.date <= raw.index[-1]]
-        adjusted = forward_adjust(raw, events)
+        # Every ex-rights event known today, also those after the backtest end:
+        # a TDX backtest adjusts as of the day it runs. Cutting at the end
+        # changed 2024H1 signals (strategy 3 traded 002521, TDX did not).
+        adjusted = forward_adjust(raw, self._events[symbol])
         adjusted['amount'] = raw['amount']
         return adjusted
 

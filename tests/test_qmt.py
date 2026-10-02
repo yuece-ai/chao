@@ -427,3 +427,12 @@ def test_a_forbidden_report_folder_does_not_stop_the_backtest(test_strategy, mon
     log = run_backtest(C, FakeAccount(), [297], report_path='D:\\chao\\report')
     assert any('cannot write the trade lists' in line for line in log)
     assert any(line.startswith('chao: backtest ready') for line in log)
+
+
+def test_backtest_bars_are_adjusted_as_of_today():
+    # The backtest ends 2020-01-01; a 0.5 cash dividend goes ex on 2020-01-02.
+    bars = dict(INDEX_BARS, **{'000001.SZ': daily([10.0, 9.5], start='2020-01-01')})
+    C = FakeContextInfo(bars, divid={'000001.SZ': {'20200102': [0.5, 0, 0, 0, 0, 0, 1.0]}}, backtest=True)
+    market = QmtMarket(C, (), 10, '20200101')
+    market.prefetch(['SZ000001'], ['999999'])
+    assert market.bars('SZ000001').close.tolist() == [9.5]
