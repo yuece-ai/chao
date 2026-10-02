@@ -1,12 +1,15 @@
 #coding:gbk
 # One-off check of QMT financial data reads: paste into a strategy file, press Run once, send the log.
 # Not part of chao_strategy.py; delete it once the share-history read is settled.
+import sys
+
 FIELD = 'CAPITALSTRUCTURE.total_capital'
 PROFIT = u'\u5229\u6da6\u8868.\u51c0\u5229\u6da6'  # the doc example's second field
 
 
 def init(C):
-    pass
+    print('fin probe v3: init do_back_test=%s' % C.do_back_test)  # proves this version was compiled
+    sys.stdout.flush()
 
 
 def show(label, call):
@@ -20,6 +23,7 @@ def show(label, call):
             print('fin %s: %s %r' % (label, type(value).__name__, value))
     except Exception as e:
         print('fin %s: error %r' % (label, e))
+    sys.stdout.flush()
 
 
 DONE = []  # module state: ContextInfo attributes roll back between calls
