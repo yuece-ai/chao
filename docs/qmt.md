@@ -216,6 +216,7 @@ here, because its full schema is not documented and could not be checked.
 | `buy_time` | `14:56:50` | live only: when to send the buys |
 | `price_margin` | `0.015` | live only: limit price this far through the last price; at most 0.02, the price cage |
 | `ledger_path` | (empty) | required for live orders: JSON file of chao's stocks and pending sells |
+|  |  | QMT's sandbox ("Foribdden FileIO") lets a strategy write only in its working folder, `<QMT>\bin.x64`, so `qmt/strategy.json` uses relative paths there: `chao-ledger.json` and `.`; a live run with orders writes the ledger at startup and stops if it cannot |
 | `report_path` | (empty) | backtest: directory for the TDX-layout trade lists |
 | `tdx_cash` | `1000000` | backtest: cash per (strategy, stock), as in the TDX backtest |
 | `buy_fee_rate` / `sell_fee_rate` | `0.0005` / `0.0003` | backtest: TDX fee rates |

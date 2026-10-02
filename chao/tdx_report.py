@@ -29,7 +29,8 @@ def export_lines(events, names):
 
 def write_exports(directory, events_by_strategy, names):
     """One file per strategy: strategy-<id>-signals.tsv (UTF-8)."""
-    os.makedirs(directory, exist_ok=True)
+    if not os.path.isdir(directory):  # QMT's sandbox may forbid even an existing folder's mkdir
+        os.makedirs(directory)
     paths = []
     for sid, events in sorted(events_by_strategy.items()):
         path = os.path.join(directory, 'strategy-{}-signals.tsv'.format(sid))

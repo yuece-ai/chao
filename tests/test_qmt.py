@@ -394,7 +394,10 @@ def test_tick_amount_unit_is_read_from_the_tick():
     assert bar['amount'].tolist() == [1386209937.0]
 
 
-def test_file_access_reports_each_folder(tmp_path):
-    lines = entry.file_access(str(tmp_path / 'missing'))
-    assert lines[0].startswith(str(tmp_path / 'missing') + ' FileNotFoundError')
-    assert any(line.endswith(' ok') for line in lines) and not list(tmp_path.iterdir())
+def test_live_orders_check_the_ledger_is_writable_at_startup(tmp_path):
+    with pytest.raises(OSError):
+        entry.build_run(FakeContextInfo({}), FakeAccount().namespace(
+            account_id='A1', dry_run=0, ledger_path=str(tmp_path / 'missing' / 'ledger.json')))
+    entry.build_run(FakeContextInfo({}), FakeAccount().namespace(
+        account_id='A1', dry_run=0, ledger_path=str(tmp_path / 'ledger.json')))
+    assert (tmp_path / 'ledger.json').read_text() == '{}'
