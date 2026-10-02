@@ -67,8 +67,7 @@ def test_gui_beats_config_beats_default(monkeypatch):
 ])
 def test_unsafe_trading_setups_are_rejected(backtest, gui, message):
     with pytest.raises(ConfigError, match=message):
-        entry.build_run(FakeContextInfo({}, backtest=backtest),
-                        FakeAccount().namespace(account=None if backtest else 'LIVE', **gui))
+        entry.build_run(FakeContextInfo({}, backtest=backtest), FakeAccount().namespace(**gui))
 
 
 def test_main_chart_must_be_daily():
@@ -82,9 +81,9 @@ def market_with(closes):
     return dict(INDEX_BARS, **{'000001.SZ': daily(closes), '000002.SZ': daily([10.0] * 10, start='2021-02-10')})
 
 
-def run_handlebar(C, fake, **gui):
+def run_handlebar(C, account, **gui):
     with redirect_stdout(io.StringIO()) as out:
-        entry.RUN, _ = entry.build_run(C, fake.namespace(**gui))
+        entry.RUN, _ = entry.build_run(C, account.namespace(**gui))
         entry.handlebar(C)
     return out.getvalue().splitlines()
 
@@ -119,7 +118,7 @@ def test_live_dry_run_prints_orders_without_placing(test_strategy):
 
 def test_live_without_account_only_reports_signals(test_strategy):
     C = live([10.0] * 299 + [11.0], names={'000001.SZ': 'X'}, sectors={'A': ['000001.SZ']})
-    log = run_handlebar(C, FakeAccount(), account=None, mode='live')  # forced: auto needs an account
+    log = run_handlebar(C, FakeAccount())
     assert log[-2].startswith('chao: 1 signals, 0 skipped, ')
     assert log[-1] == 'chao: no account_id, so orders are not planned'
 
@@ -146,7 +145,7 @@ def backtest_client(closes, **kwargs):
 
 def run_backtest(C, account, positions, **gui):
     with redirect_stdout(io.StringIO()) as out:
-        entry.init_with(C, account.namespace(account=None, account_id='testS', **gui))  # the strategy editor
+        entry.init_with(C, account.namespace(account_id='testS', **gui))
         for position in positions:
             C.barpos = position
             entry.handlebar(C)
@@ -395,52 +394,7 @@ def test_tick_amount_unit_is_read_from_the_tick():
     assert bar['amount'].tolist() == [1386209937.0]
 
 
-def test_startup_lists_the_context_attributes(test_strategy):
-    C = backtest_client([10.0] * 300, start='2021-02-01 00:00:00')
-    log = run_backtest(C, FakeAccount(), [299])
-    line = next(l for l in log if l.startswith('chao: ContextInfo '))
-    assert 'do_back_test=True' in line and "start='2021-02-01 00:00:00'" in line
-
-
-def test_every_init_is_journaled_in_the_report_path(test_strategy, tmp_path):
-    for backtest in (False, True):
-        C = backtest_client([10.0] * 300, start='2021-02-01 00:00:00')
-        C.do_back_test = backtest
-        with redirect_stdout(io.StringIO()):
-            entry.init_with(C, FakeAccount().namespace(account_id='testS', report_path=str(tmp_path)))
-    lines = (tmp_path / 'runs.log').read_text(encoding='utf-8').splitlines()
-    assert ['do_back_test=False' in lines[0], 'do_back_test=True' in lines[1]] == [True, True]
-
-
 def test_file_access_reports_each_folder(tmp_path):
     lines = entry.file_access(str(tmp_path / 'missing'))
     assert lines[0].startswith(str(tmp_path / 'missing') + ' FileNotFoundError')
     assert any(line.endswith(' ok') for line in lines) and not list(tmp_path.iterdir())
-
-
-@pytest.mark.parametrize('account,do_back_test,backtest', [
-    (None, False, True),     # strategy editor, 回测 or 运行: this client never sets do_back_test
-    ('8800001', False, False),  # 模型交易 injects the selected account
-    (None, True, True),
-])
-def test_auto_mode_follows_where_the_strategy_runs(account, do_back_test, backtest):
-    C = FakeContextInfo({}, backtest=do_back_test)
-    run, _ = entry.build_run(C, FakeAccount().namespace(account=account, account_id='testS'))
-    assert run.backtest == backtest
-
-
-def test_backtest_range_without_qmt_dates_is_the_tdx_range():
-    C = FakeContextInfo({}, bar_dates=('20250102', '20260930'))
-    C.start, C.end, C.time_tick_size = '-1', '-1', 2
-    assert entry.backtest_range(C) == ('2010-01-01', '2026-09-30')
-    C.start, C.end = '2024-01-01 00:00:00', '2024-06-30 15:00:00'
-    assert entry.backtest_range(C) == ('2024-01-01', '2024-06-30')
-
-
-def test_an_editor_run_without_qmt_backtest_settings_replays_the_tdx_range(test_strategy):
-    # What the client gives on 回测: do_back_test False, start and end -1, no account.
-    C = backtest_client([10.0] * 297 + [11.0, 10.0, 10.0])
-    C.do_back_test, C.start, C.end, C.time_tick_size = False, '-1', '-1', 300
-    log = run_backtest(C, FakeAccount(), [0, 297, 298])
-    assert 'chao: mode backtest (do_back_test=False at the first bar)' in log
-    assert any(line.startswith('chao: backtest range 2010-01-01 .. 2021-02-23') for line in log)

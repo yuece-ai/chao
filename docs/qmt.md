@@ -57,18 +57,7 @@ Before running:
 2. Paste `qmt/chao_strategy.py` into a QMT strategy.
 3. Set the main chart to daily (1d); the strategy refuses other periods.
 
-Where the strategy runs decides the mode (`mode = 'auto'`):
-- **Strategy editor (回测 or 运行): backtest.** QMT's docs say editor orders
-  never reach an account. This client never sets `C.do_back_test`, and
-  leaves `C.start`/`C.end`/`C.capital` at -1 even on 回测 (QMT's own sample
-  strategy shows the same), so the range is the TDX exports' range:
-  2010-01-01 to the main chart's last bar. When QMT does set start and end,
-  they are used.
-- **模型交易: live.** QMT injects the selected account there; that is the
-  only place orders are real.
-
-Either mistake is safe: an editor run sends nothing, and a backtest replay
-elsewhere goes to the `testS` placeholder account.
+Choose backtest or live in the QMT GUI; the strategy reads `C.do_back_test`.
 
 - **Backtest, aligned with the user's TDX backtest:**
   - At the first bar, every (strategy, stock) pair is replayed with the TDX

@@ -42,7 +42,7 @@ from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.market import Context, MissingInput
 from chao.orders import CAGE_RATE, Order, limit_price, plan_orders
-from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date, short
+from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, number, text
 from chao.replay import BUY, ReplaySpec, replay
@@ -57,7 +57,6 @@ BATCH_LIVE, BATCH_BACKTEST = 200, 25
 # QMT backtest capital: large enough that every TDX trade, each sized from
 # its own tdx_cash, can be filled at once in one account.
 BACKTEST_CAPITAL = 1e12
-TDX_START = '2010-01-01'  # first day of the user's TDX backtest exports
 MARKET_CLOSE = '15:00:00'
 # Live readiness: at most this share of stocks may lack the previous trading
 # day's bar (suspensions); more means the local download is incomplete.
@@ -101,8 +100,7 @@ def clock(value):
 
 
 FIELDS = [
-    Field('mode', run_mode, 'auto', "'auto': live under 模型交易 (QMT injects the account), else backtest; "
-                                    "'backtest' or 'live' forces it"),
+    Field('mode', run_mode, 'auto', "'auto': QMT's do_back_test at the first bar; 'backtest' or 'live' forces it"),
     Field('strategies', id_list, (1, 2, 3, 4, 5, 6), 'strategy ids to run (7, Beijing, is not traded)'),
     Field('priority', id_list, (6, 5, 4, 3, 2, 1), 'conflict order, highest first; must list every strategy run'),
     Field('sectors', names, ('沪深A股',), 'QMT sectors forming the stock universe'),
@@ -179,13 +177,9 @@ def check(settings, C, backtest):
         raise ConfigError('ledger_path is required for live orders, so manual holdings are never sold')
 
 
-def backtest_range(C):
-    """(start, end) as 'YYYY-MM-DD'. ContextInfo.start/end when QMT sets
-    them; this client leaves both at -1 even on 回测, so the TDX exports'
-    range is used then: TDX_START to the main chart's last bar."""
-    if str(C.start) != '-1' and str(C.end) != '-1':
-        return qmt_date(C.start).strftime('%Y-%m-%d'), qmt_date(C.end).strftime('%Y-%m-%d')
-    return TDX_START, qmt_date(C.get_bar_timetag(C.time_tick_size - 1)).strftime('%Y-%m-%d')
+def backtest_end(C):
+    """ContextInfo.end ('%Y-%m-%d %H:%M:%S') -> 'YYYYMMDD'."""
+    return qmt_date(C.end).strftime('%Y%m%d')
 
 
 def load_settings(namespace):
@@ -194,25 +188,17 @@ def load_settings(namespace):
     return QmtSettings(**loaded.values), describe(loaded)
 
 
-def is_backtest(settings, C, namespace):
-    """QMT injects the selected account only under 模型交易, the one place
-    orders are real; in the strategy editor (回测 or 运行) orders never reach
-    an account. This client never sets do_back_test, so auto backtests in the
-    editor and trades live under 模型交易. Either mistake is safe: an editor
-    run sends nothing, and a backtest replay outside it goes to the testS
-    placeholder account."""
-    if settings.mode != 'auto':
-        return settings.mode == 'backtest'
-    return bool(C.do_back_test) or not namespace.get('account')
+def is_backtest(settings, C):
+    return settings.mode == 'backtest' or (settings.mode == 'auto' and bool(C.do_back_test))
 
 
 def build_run(C, namespace):
     settings, lines = load_settings(namespace)
-    backtest = is_backtest(settings, C, namespace)
+    backtest = is_backtest(settings, C)
     check(settings, C, backtest)
     selected = load_strategies(strategy_files())
     market = QmtMarket(C, settings.sectors, ALL_BARS if backtest else HISTORY_BARS,
-                       backtest_range(C)[1].replace('-', '') if backtest else '')
+                       backtest_end(C) if backtest else '')
     context = Context(settings, market, {sid: selected[sid] for sid in settings.strategies})
     ledger = Ledger('' if backtest else settings.ledger_path)
     run = Run(context, qmt_api(namespace), ledger, backtest)
@@ -458,22 +444,6 @@ def check_environment(C, namespace):
         raise ConfigError('QMT API not available: {}'.format(missing))
 
 
-def journal_run(directory, C):
-    """Append one line per init to <report_path>/runs.log. Every QMT run
-    started for this strategy writes here, whichever log window shows it, so
-    a 回测 click that also restarts a chart run shows both."""
-    line = '{} request_id={} do_back_test={} start={} end={} capital={} benchmark={!r}\n'.format(
-        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), getattr(C, 'request_id', None),
-        getattr(C, 'do_back_test', None), getattr(C, 'start', None), getattr(C, 'end', None),
-        getattr(C, 'capital', None), getattr(C, 'benchmark', None))
-    try:
-        os.makedirs(directory, exist_ok=True)
-        with open(os.path.join(directory, 'runs.log'), 'a', encoding='utf-8') as out:
-            out.write(line)
-    except OSError as exc:  # a diagnostic only; the run goes on
-        print('chao: warning: cannot write {}: {}'.format(os.path.join(directory, 'runs.log'), exc))
-
-
 def file_access(report_path):
     """Which folders this client lets a strategy write: it raised
     'Foribdden FileIO' for D:\\chao\\report, and the ledger needs one."""
@@ -504,26 +474,8 @@ def init_with(C, namespace):
     print('chao: init do_back_test={} mode={}'.format(getattr(C, 'do_back_test', None), settings.mode))
     for line in file_access(settings.report_path):
         print('chao: file access ' + line)
-    if settings.report_path:
-        journal_run(settings.report_path, C)
-    if is_backtest(settings, C, namespace):
+    if is_backtest(settings, C):
         C.capital = BACKTEST_CAPITAL  # capital can only be set in init; every TDX trade has its own tdx_cash
-
-
-def context_attributes(C):
-    """Every plain ContextInfo attribute QMT sets, to see how this client
-    marks a backtest (do_back_test, start and end disagreed with the GUI)."""
-    values = []
-    for name in sorted(dir(C)):
-        if name.startswith('_'):
-            continue
-        try:
-            value = getattr(C, name)
-        except Exception as exc:  # a property may fail outside its mode; show that too
-            value = '<{}>'.format(type(exc).__name__)
-        if not callable(value):
-            values.append('{}={}'.format(name, ' '.join(short(value).split())[:60]))
-    return ' '.join(values)
 
 
 def first_bar(C):
@@ -534,11 +486,6 @@ def first_bar(C):
         print('chao: config ' + line)
     print('chao: mode {} (do_back_test={} at the first bar)'.format(
         'backtest' if run.backtest else 'live', getattr(C, 'do_back_test', None)))
-    print('chao: QMT run: start={} end={} period={} first bar {} of {}'.format(  # shows which button ran it
-        getattr(C, 'start', None), getattr(C, 'end', None), C.period,
-        qmt_date(C.get_bar_timetag(C.barpos)).date(), qmt_date(C.get_bar_timetag(C.time_tick_size - 1)).date()
-        if getattr(C, 'time_tick_size', 0) else '?'))
-    print('chao: ContextInfo ' + context_attributes(C))
     if run.backtest and getattr(C, 'capital', None) != BACKTEST_CAPITAL:
         print("chao: warning: the backtest capital was not raised in init; set it high in QMT's backtest "
               "settings, or set mode='backtest', so no mirrored trade is short of cash")
@@ -564,9 +511,7 @@ def handlebar(C):
 def backtest_tick(C, run):
     if run.trades is None:
         run.failed = True  # until the preparation completes: never trade on a partial list
-        start, end = backtest_range(C)
-        print('chao: backtest range {} .. {} (QMT start={} end={})'.format(start, end, C.start, C.end))
-        prepare_backtest(run, start, end)
+        prepare_backtest(run, qmt_date(C.start).strftime('%Y-%m-%d'), qmt_date(C.end).strftime('%Y-%m-%d'))
         run.failed = False
     backtest_bar(C, run, qmt_date(C.get_bar_timetag(C.barpos)).strftime('%Y-%m-%d'))
 
