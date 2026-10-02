@@ -57,7 +57,7 @@ def test_qmt_adapter_reproduces_the_tdx_path():
     from chao.tdx_source import TdxMarket
     gbbq = load_gbbq(GBBQ)
     symbols = [equity_symbol(c) for c in SAMPLE]
-    qmt = QmtMarket(tdx_as_qmt(symbols, gbbq), (), ALL_BARS, '20991231')  # the backtest path
+    qmt = QmtMarket(tdx_as_qmt(symbols, gbbq), (), ALL_BARS, '20991231', '2026-09-30')  # the backtest path
     qmt.prefetch(symbols, sorted(INDEX_SYMBOLS))
     tdx = TdxMarket(RAW, QFQ_ROOT, gbbq, {s[2:]: 'N' + s for s in symbols})
     context = Context(None, qmt, load_strategies(strategy_files()))

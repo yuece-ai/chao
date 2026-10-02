@@ -203,8 +203,9 @@ def build_run(C, namespace):
     backtest = is_backtest(settings, C)
     check(settings, C, backtest)
     selected = load_strategies(strategy_files())
+    last_bar = qmt_date(C.get_bar_timetag(C.time_tick_size - 1))  # the data's last day
     market = QmtMarket(C, settings.sectors, backtest_bars(C) if backtest else HISTORY_BARS,
-                       backtest_end(C) if backtest else '')
+                       backtest_end(C) if backtest else '', last_bar)
     context = Context(settings, market, {sid: selected[sid] for sid in settings.strategies})
     ledger = Ledger('' if backtest else settings.ledger_path)
     if not backtest and not settings.dry_run:

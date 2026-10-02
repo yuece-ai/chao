@@ -160,11 +160,12 @@ def first_price(levels):
 
 
 class QmtMarket(MarketData):
-    def __init__(self, context_info, sectors, history_bars, end_time):
+    def __init__(self, context_info, sectors, history_bars, end_time, adjust_until):
         self.C = context_info          # rebound by the entry on every QMT call
         self.sectors = sectors
         self.history_bars = history_bars
         self.end_time = end_time       # 'YYYYMMDD' in a backtest, '' live
+        self.adjust_until = pd.Timestamp(adjust_until)  # backtest: last ex-rights date that applies
         self.reset_static()
         self._raw = {}                 # backtest: unadjusted bars of the current batch
         self._index_closes = None
@@ -323,10 +324,11 @@ class QmtMarket(MarketData):
         raw = self.raw_bars(symbol)
         if symbol not in self._events:
             self._events[symbol] = divid_events(self.C.get_divid_factors(to_qmt(symbol)) or {})
-        # Every ex-rights event known today, also those after the backtest end:
-        # a TDX backtest adjusts as of the day it runs. Cutting at the end
-        # changed 2024H1 signals (strategy 3 traded 002521, TDX did not).
-        adjusted = forward_adjust(raw, self._events[symbol])
+        # Ex-rights up to the data's last day, also those after the backtest
+        # end: a TDX backtest adjusts as of the day it runs. Cutting at the
+        # end changed 2024H1 signals (strategy 3 traded 002521, TDX did not);
+        # announced events still ahead must not apply either.
+        adjusted = forward_adjust(raw, [e for e in self._events[symbol] if e.date <= self.adjust_until])
         adjusted['amount'] = raw['amount']
         return adjusted
 

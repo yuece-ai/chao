@@ -35,7 +35,7 @@ def test_qmt_market_adjusts_bars_and_keeps_traded_closes():
     C = FakeContextInfo(bars, divid={'000001.SZ': {'20200102': [0.5, 0, 0, 0, 0, 0, 1.0]}},
                         names={'000001.SZ': 'PING AN'}, sectors={'A': ['000001.SZ', '600036.SH']},
                         shares={'000001.SZ': pd.Series([1e9], index=['20190101'])})
-    market = QmtMarket(C, ('A',), HISTORY_BARS, '')
+    market = QmtMarket(C, ('A',), HISTORY_BARS, '', '2020-01-02')
     market.prefetch(['SZ000001', 'SH600036'], ['999999', '399001'])
     assert C.calls == [('get_market_data_ex', 4)]  # one call for the batch and the needed indices
     assert market.bars('SZ000001').close.tolist() == [9.5, 9.5]
@@ -285,7 +285,7 @@ def test_older_clients_name_the_detail_call_get_instrumentdetail():
         get_instrument_detail = None
         def get_instrumentdetail(self, code):
             return {'InstrumentName': 'OLD'}
-    market = QmtMarket(OldClient({}), (), HISTORY_BARS, '')
+    market = QmtMarket(OldClient({}), (), HISTORY_BARS, '', '2021-02-23')
     assert market.name('SZ000001') == 'OLD'
 
 
@@ -440,9 +440,13 @@ def test_backtest_bars_are_adjusted_as_of_today():
     # The backtest ends 2020-01-01; a 0.5 cash dividend goes ex on 2020-01-02.
     bars = dict(INDEX_BARS, **{'000001.SZ': daily([10.0, 9.5], start='2020-01-01')})
     C = FakeContextInfo(bars, divid={'000001.SZ': {'20200102': [0.5, 0, 0, 0, 0, 0, 1.0]}}, backtest=True)
-    market = QmtMarket(C, (), 10, '20200101')
+    market = QmtMarket(C, (), 10, '20200101', '2020-01-02')
     market.prefetch(['SZ000001'], ['999999'])
     assert market.bars('SZ000001').close.tolist() == [9.5]
+    # The data ends 2020-01-01: an event announced for later does not apply yet.
+    market = QmtMarket(C, (), 10, '20200101', '2020-01-01')
+    market.prefetch(['SZ000001'], ['999999'])
+    assert market.bars('SZ000001').close.tolist() == [10.0]
 
 
 def test_each_run_writes_new_report_files_and_readers_take_the_newest(tmp_path):
