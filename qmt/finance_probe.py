@@ -22,9 +22,14 @@ def show(label, call):
         print('fin %s: error %r' % (label, e))
 
 
+DONE = []  # module state: ContextInfo attributes roll back between calls
+
+
 def handlebar(C):
-    if not C.is_last_bar():
+    if DONE:  # once, on the first bar: in a backtest is_last_bar() may never be true
         return
+    DONE.append(True)
+    print('fin mode do_back_test=%s barpos=%s' % (C.do_back_test, C.barpos))
     # 1. the official example, verbatim
     show('doc example', lambda: C.get_financial_data([FIELD, PROFIT], ['000001.SZ', '000002.SZ'], '20171209', '20231204',
                                                      report_type='report_time'))
