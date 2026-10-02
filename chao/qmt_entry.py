@@ -43,7 +43,7 @@ from chao.catalog import strategy_files
 from chao.formulas import load_strategies
 from chao.market import Context, MissingInput
 from chao.orders import CAGE_RATE, Order, limit_price, plan_orders
-from chao.qmt_source import ALL_BARS, HISTORY_BARS, QmtMarket, probe, qmt_date
+from chao.qmt_source import HISTORY_BARS, QmtMarket, probe, qmt_date
 from chao.qmt_trade import Ledger, QmtApi, place, read_book
 from chao.settings import ConfigError, Field, describe, id_list, integer, load, number, text
 from chao.replay import BUY, ReplaySpec, replay
@@ -64,6 +64,11 @@ MARKET_CLOSE = '15:00:00'
 STALE_LIMIT = 0.10
 # Days of history wanted before a backtest's start: MA(250) plus REF lookback.
 WARMUP_DAYS = 400
+# Backtest bars read before the range: indicators over a window of at least
+# 400 bars equal full-history ones on its later bars (0 differences in 1.74
+# million bars; 300 differed in 8), so a stock's bars from the range start on
+# match a full-history read.
+WARMUP_BARS = 500
 # First trading day of each formula index: an index cannot have older bars.
 INDEX_SINCE = {'999999': '1990-12-19', '399001': '1991-04-03', '399006': '2010-06-01',
                '000688': '2019-12-31', '899050': '2022-04-29'}
@@ -198,7 +203,7 @@ def build_run(C, namespace):
     backtest = is_backtest(settings, C)
     check(settings, C, backtest)
     selected = load_strategies(strategy_files())
-    market = QmtMarket(C, settings.sectors, ALL_BARS if backtest else HISTORY_BARS,
+    market = QmtMarket(C, settings.sectors, backtest_bars(C) if backtest else HISTORY_BARS,
                        backtest_end(C) if backtest else '')
     context = Context(settings, market, {sid: selected[sid] for sid in settings.strategies})
     ledger = Ledger('' if backtest else settings.ledger_path)
@@ -286,17 +291,29 @@ def say(line):
     sys.stdout.flush()
 
 
-def last_chart_day(C, end):
-    """Date of the main chart's last bar on or before end: the backtest end
-    may fall on a weekend or holiday (2024-06-30 was a Sunday)."""
+def last_chart_position(C, end):
+    """Position of the main chart's last bar on or before end ('YYYY-MM-DD');
+    the end may fall on a weekend or holiday (2024-06-30 was a Sunday)."""
     low, high = 0, C.time_tick_size - 1
-    while low < high:  # last position whose date is <= end
+    while low < high:
         middle = (low + high + 1) // 2
         if qmt_date(C.get_bar_timetag(middle)).strftime('%Y-%m-%d') <= end:
             low = middle
         else:
             high = middle - 1
-    return qmt_date(C.get_bar_timetag(low)).strftime('%Y-%m-%d')
+    return low
+
+
+def last_chart_day(C, end):
+    return qmt_date(C.get_bar_timetag(last_chart_position(C, end))).strftime('%Y-%m-%d')
+
+
+def backtest_bars(C):
+    """Bars per stock a backtest reads: its own range on the main chart plus
+    WARMUP_BARS before it, not the whole history since 1990. Called on the
+    first bar, where C.barpos is the range's first bar."""
+    end = qmt_date(C.end).strftime('%Y-%m-%d')
+    return last_chart_position(C, end) - C.barpos + 1 + WARMUP_BARS
 
 
 def prepare_backtest(run, start, end, last_day):
