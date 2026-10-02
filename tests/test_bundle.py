@@ -43,7 +43,8 @@ def bundled(tmp_path_factory):
 
 def test_bundle_behaves_like_the_modules(bundled):
     _, module = bundled
-    assert run_strategy(module) == run_strategy(entry)
+    bundled_log = run_strategy(module).replace('chao: build {} '.format(module.BUILD), 'chao: build source ')
+    assert bundled_log == run_strategy(entry)
 
 
 def test_bundle_reads_gui_parameters_from_its_globals(bundled):
@@ -106,3 +107,10 @@ def test_bundle_globals_leave_qmt_names_alone():
     names |= {t.id for n in tree.body if isinstance(n, ast.Assign) for t in n.targets if isinstance(t, ast.Name)}
     reserved = {'start', 'end', 'capital', 'benchmark', 'period', 'stop', 'after_init', 'account', 'accountType'}
     assert names & reserved == set()
+
+
+def test_the_log_names_the_pasted_build(bundled):
+    path, module = bundled
+    fingerprint = path.read_text().splitlines()[2].split()[2].rstrip(':')
+    assert module.BUILD == fingerprint and len(fingerprint) == 8
+    assert 'chao: build {} init'.format(fingerprint) in run_strategy(module)

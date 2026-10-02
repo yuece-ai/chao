@@ -52,6 +52,7 @@ from chao.tdx_report import summary_line, write_exports
 
 # Code configuration: edit here when a value should not be a GUI parameter.
 CONFIG = {}
+BUILD = 'source'  # the bundler writes the pasted file's fingerprint here
 # Stocks per batch: one get_market_data_ex call and one evaluation panel.
 # Backtests read the full history, so their panels are kept smaller.
 BATCH_LIVE, BATCH_BACKTEST = 200, 25
@@ -501,7 +502,7 @@ def init_with(C, namespace):
     check_environment(C, namespace)
     settings, _ = load_settings(namespace)
     RUN, NAMESPACE = None, namespace
-    print('chao: init do_back_test={} mode={}'.format(getattr(C, 'do_back_test', None), settings.mode))
+    print('chao: build {} init do_back_test={} mode={}'.format(BUILD, getattr(C, 'do_back_test', None), settings.mode))
     if is_backtest(settings, C):
         C.capital = BACKTEST_CAPITAL  # capital can only be set in init; every TDX trade has its own tdx_cash
 
