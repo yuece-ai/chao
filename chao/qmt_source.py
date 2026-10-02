@@ -189,11 +189,11 @@ class QmtMarket(MarketData):
                                   first_price(tick.get('bidPrice')))
         return quotes
 
-    def latest_static_dates(self):
-        """Latest ex-rights date and share-capital date read so far (or None)."""
+    def latest_ex_rights(self):
+        """Latest ex-rights date read so far (or None). Total shares are
+        today's value, so they have no date to check."""
         events = [e.date for es in self._events.values() for e in es]
-        shares = [pd.Timestamp(d) for steps in self._shares.values() for d in steps]
-        return max(events) if events else None, max(shares) if shares else None
+        return max(events) if events else None
 
     def _fetch(self, qmt_codes):
         data = self.C.get_market_data_ex(BAR_FIELDS, qmt_codes, period='1d', end_time=self.end_time,

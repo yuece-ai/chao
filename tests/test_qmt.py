@@ -262,8 +262,10 @@ def test_live_sends_nothing_after_the_close(test_strategy, monkeypatch, tmp_path
 
 def test_a_failed_backtest_preparation_never_trades(test_strategy):
     C = backtest_client([10.0] * 297 + [11.0, 10.0, 10.0], start='2021-02-01 00:00:00', end='2021-03-31 15:00:00')
+    for code in QMT_INDEX.values():  # the chart reaches 2021-02-23, the downloaded index bars do not
+        C.bars[code] = C.bars[code].iloc[:-1]
     account = FakeAccount()
-    with pytest.raises(ValueError, match='QMT bars end on 2021-02-23, before the backtest end 2021-03-31'):
+    with pytest.raises(ValueError, match='QMT index bars end on 2021-02-22, before the last trading day 2021-02-23'):
         run_backtest(C, account, [297])
     entry.handlebar(C)  # later bars: stopped, no retry and no partial trades
     assert account.orders == [] and C.calls.count(('get_market_data_ex', 5)) == 1
@@ -407,3 +409,11 @@ def test_backtest_preparation_reports_progress(test_strategy):
     log = run_backtest(backtest_client([10.0] * 300, start='2021-02-01 00:00:00'), FakeAccount(), [299])
     assert any(l.startswith('chao: backtest preparing 1 stocks 2021-02-01 .. ') for l in log)
     assert 'chao: backtest preparing 1/1 stocks, 0s' in log
+
+
+def test_a_backtest_may_end_on_a_weekend(test_strategy):
+    # 2024-06-30, the integrator's end, was a Sunday; here 2021-02-28 is one.
+    C = backtest_client([10.0] * 297 + [11.0, 10.0, 10.0], start='2021-02-01 00:00:00', end='2021-02-28 15:00:00')
+    log = run_backtest(C, FakeAccount(), [297])
+    assert any(line.startswith('chao: backtest ready') for line in log)
+    assert entry.last_chart_day(C, '2021-02-28') == '2021-02-23' and entry.last_chart_day(C, '2020-01-01') == '2020-01-01'

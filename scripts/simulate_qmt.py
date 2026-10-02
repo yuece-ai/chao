@@ -82,11 +82,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--start', required=True, help='YYYY-MM-DD')
     ap.add_argument('--end', required=True, help='YYYY-MM-DD')
+    ap.add_argument('--report', help='keep the trade lists in this directory (default: a temporary one)')
     args = ap.parse_args()
     refs = read_references('origin')
     names = {r['code']: r['name'] for rows in refs.values() for r in rows}
     symbols = sorted(equity_symbol(c) for c in names if not equity_symbol(c).startswith('BJ'))
-    report = Path(tempfile.mkdtemp())
+    report = Path(args.report) if args.report else Path(tempfile.mkdtemp())
     module = load_bundle({'account_id': 'testS', 'report_path': str(report)})
     C = tdx_as_qmt(symbols, load_gbbq(GBBQ))
     C.names.update({to_qmt(s): names[s[2:]] for s in symbols})

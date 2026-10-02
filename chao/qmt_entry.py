@@ -286,9 +286,23 @@ def say(line):
     sys.stdout.flush()
 
 
-def prepare_backtest(run, start, end):
+def last_chart_day(C, end):
+    """Date of the main chart's last bar on or before end: the backtest end
+    may fall on a weekend or holiday (2024-06-30 was a Sunday)."""
+    low, high = 0, C.time_tick_size - 1
+    while low < high:  # last position whose date is <= end
+        middle = (low + high + 1) // 2
+        if qmt_date(C.get_bar_timetag(middle)).strftime('%Y-%m-%d') <= end:
+            low = middle
+        else:
+            high = middle - 1
+    return qmt_date(C.get_bar_timetag(low)).strftime('%Y-%m-%d')
+
+
+def prepare_backtest(run, start, end, last_day):
     """Replay every (strategy, stock) pair with the TDX ledger over
-    [start, end], write the TDX-layout trade lists and queue the trades."""
+    [start, end], write the TDX-layout trade lists and queue the trades.
+    The index bars must reach last_day, the chart's last trading day."""
     started = time.time()
     settings, market = run.context.settings, run.context.market
     spec = ReplaySpec(start, end, settings.tdx_cash, settings.buy_fee_rate, settings.sell_fee_rate)
@@ -305,6 +319,11 @@ def prepare_backtest(run, start, end):
             say('chao: backtest preparing {}/{} stocks, {:.0f}s'.format(
                 min(number * BATCH_BACKTEST, len(universe)), len(universe), time.time() - started))
         market.prefetch(batch, run.index_codes)
+        if number == 1:  # fail before the long replay, not after it
+            last = min(c.index[-1] for c in market.index_closes().values()).strftime('%Y-%m-%d')
+            if last < last_day:
+                raise MissingInput('QMT index bars end on {}, before the last trading day {} of the backtest; '
+                                   'download the history first'.format(last, last_day))
         bars, results, bad = panel_signals(strategies, market, batch)
         errors += bad
         for symbol, by_strategy in results.items():
@@ -317,16 +336,10 @@ def prepare_backtest(run, start, end):
                     side = 'buy' if e['direction'] == BUY else 'sell'
                     trades.setdefault(e['date'], []).append(Order(side, symbol, e['quantity'], sid))
                 events[sid] += rows
-    closes = market.index_closes().values()
-    last = min(c.index[-1] for c in closes).strftime('%Y-%m-%d')
-    if last < end:
-        raise MissingInput('QMT bars end on {}, before the backtest end {}; download the history first'
-                           .format(last, end))
-    ex_rights, shares = market.latest_static_dates()
-    for what, latest in (('ex-rights', ex_rights), ('share-capital change', shares)):
-        if latest is not None and latest < pd.Timestamp(start):
-            print('chao: warning: the latest {} QMT returned is {}, before the backtest start; QMT may cut '
-                  'static data at the current bar, which would make qfq or FINANCE wrong'.format(what, latest.date()))
+    latest = market.latest_ex_rights()
+    if latest is not None and latest < pd.Timestamp(start):
+        print('chao: warning: the latest ex-rights QMT returned is {}, before the backtest start; QMT may cut '
+              'static data at the current bar, which would make qfq wrong'.format(latest.date()))
     wanted = pd.Timestamp(start) - pd.Timedelta(days=WARMUP_DAYS)
     for code, close in sorted(market.index_closes().items()):
         since = max(wanted, pd.Timestamp(INDEX_SINCE[code]))
@@ -345,7 +358,7 @@ def prepare_backtest(run, start, end):
         print('chao: {} {} is bought and sold on the same bar in TDX; QMT applies T+1 and cannot sell it that day'
               .format(day, symbol))
     run.trades = trades  # only a complete preparation is used
-    print('chao: backtest ready: {} trades, {} skipped, {:.0f}s'.format(
+    say('chao: backtest ready: {} trades, {} skipped, {:.0f}s'.format(
         sum(len(v) for v in events.values()), len(errors), time.time() - started))
 
 
@@ -502,7 +515,8 @@ def handlebar(C):
 def backtest_tick(C, run):
     if run.trades is None:
         run.failed = True  # until the preparation completes: never trade on a partial list
-        prepare_backtest(run, qmt_date(C.start).strftime('%Y-%m-%d'), qmt_date(C.end).strftime('%Y-%m-%d'))
+        start, end = qmt_date(C.start).strftime('%Y-%m-%d'), qmt_date(C.end).strftime('%Y-%m-%d')
+        prepare_backtest(run, start, end, last_chart_day(C, end))
         run.failed = False
     backtest_bar(C, run, qmt_date(C.get_bar_timetag(C.barpos)).strftime('%Y-%m-%d'))
 

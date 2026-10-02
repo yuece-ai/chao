@@ -62,6 +62,10 @@ class FakeContextInfo:
     def is_last_bar(self):
         return self.last_bar
 
+    @property
+    def time_tick_size(self):
+        return len(self.bar_dates)
+
     def get_bar_timetag(self, position):
         return self.bar_dates[position]
 
