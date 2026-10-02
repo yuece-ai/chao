@@ -8,7 +8,7 @@ PROFIT = u'\u5229\u6da6\u8868.\u51c0\u5229\u6da6'  # the doc example's second fi
 
 
 def init(C):
-    print('fin probe v3: init do_back_test=%s' % C.do_back_test)  # proves this version was compiled
+    print('fin probe v4: init do_back_test=%s' % C.do_back_test)  # proves this version was compiled
     sys.stdout.flush()
 
 
@@ -34,6 +34,11 @@ def handlebar(C):
         return
     DONE.append(True)
     print('fin mode do_back_test=%s barpos=%s' % (C.do_back_test, C.barpos))
+    # 0. other tables, one stock: is any financial data local at all?
+    for field in ('ASHAREINCOME.net_profit_incl_min_int_inc', 'ASHAREBALANCESHEET.tot_assets',
+                  'PERSHAREINDEX.s_fa_eps_basic', PROFIT, 'CAPITALSTRUCTURE.circulating_capital'):
+        show('raw ' + repr(field), lambda field=field: C.get_raw_financial_data([field], ['000001.SZ'], '20200101',
+                                                                                '20260930', report_type='report_time'))
     # 1. the official example, verbatim
     show('doc example', lambda: C.get_financial_data([FIELD, PROFIT], ['000001.SZ', '000002.SZ'], '20171209', '20231204',
                                                      report_type='report_time'))
