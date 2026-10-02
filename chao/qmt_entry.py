@@ -34,6 +34,7 @@ panel holds numbers only, so lists and text belong in CONFIG.
 """
 import builtins
 import datetime
+import os
 import time
 from collections import namedtuple
 import pandas as pd
@@ -443,12 +444,30 @@ def check_environment(C, namespace):
         raise ConfigError('QMT API not available: {}'.format(missing))
 
 
+def journal_run(directory, C):
+    """Append one line per init to <report_path>/runs.log. Every QMT run
+    started for this strategy writes here, whichever log window shows it, so
+    a 回测 click that also restarts a chart run shows both."""
+    line = '{} request_id={} do_back_test={} start={} end={} capital={} benchmark={!r}\n'.format(
+        datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'), getattr(C, 'request_id', None),
+        getattr(C, 'do_back_test', None), getattr(C, 'start', None), getattr(C, 'end', None),
+        getattr(C, 'capital', None), getattr(C, 'benchmark', None))
+    try:
+        os.makedirs(directory, exist_ok=True)
+        with open(os.path.join(directory, 'runs.log'), 'a', encoding='utf-8') as out:
+            out.write(line)
+    except OSError as exc:  # a diagnostic only; the run goes on
+        print('chao: warning: cannot write {}: {}'.format(os.path.join(directory, 'runs.log'), exc))
+
+
 def init_with(C, namespace):
     global RUN, NAMESPACE
     check_environment(C, namespace)
     settings, _ = load_settings(namespace)
     RUN, NAMESPACE = None, namespace
     print('chao: init do_back_test={} mode={}'.format(getattr(C, 'do_back_test', None), settings.mode))
+    if settings.report_path:
+        journal_run(settings.report_path, C)
     if is_backtest(settings, C):
         C.capital = BACKTEST_CAPITAL  # capital can only be set in init; every TDX trade has its own tdx_cash
 

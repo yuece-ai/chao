@@ -399,3 +399,13 @@ def test_startup_lists_the_context_attributes(test_strategy):
     log = run_backtest(C, FakeAccount(), [299])
     line = next(l for l in log if l.startswith('chao: ContextInfo '))
     assert 'do_back_test=True' in line and "start='2021-02-01 00:00:00'" in line
+
+
+def test_every_init_is_journaled_in_the_report_path(test_strategy, tmp_path):
+    for backtest in (False, True):
+        C = backtest_client([10.0] * 300, start='2021-02-01 00:00:00')
+        C.do_back_test = backtest
+        with redirect_stdout(io.StringIO()):
+            entry.init_with(C, FakeAccount().namespace(account_id='testS', report_path=str(tmp_path)))
+    lines = (tmp_path / 'runs.log').read_text(encoding='utf-8').splitlines()
+    assert ['do_back_test=False' in lines[0], 'do_back_test=True' in lines[1]] == [True, True]
