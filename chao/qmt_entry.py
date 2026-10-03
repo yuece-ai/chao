@@ -356,10 +356,11 @@ def prepare_backtest(run, start, end, last_day):
             say('chao: backtest preparing {}/{} stocks, {:.0f}s ({})'.format(
                 min(number * BATCH_BACKTEST, len(universe)), len(universe), time.time() - started,
                 ', '.join('{} {:.0f}s'.format(k, v) for k, v in sorted(market.seconds.items()))))
-    latest = market.latest_ex_rights()
-    if latest is not None and latest < pd.Timestamp(start):
-        print('chao: warning: the latest ex-rights QMT returned is {}, before the backtest start; QMT may cut '
-              'static data at the current bar, which would make qfq wrong'.format(latest.date()))
+    ex_rights, shares = market.latest_static_dates()
+    for what, latest in (('ex-rights', ex_rights), ('share-capital change', shares)):
+        if latest is not None and latest < pd.Timestamp(start):
+            print('chao: warning: the latest {} QMT returned is {}, before the backtest start; QMT may cut '
+                  'static data at the current bar, which would make qfq or FINANCE wrong'.format(what, latest.date()))
     wanted = pd.Timestamp(start) - pd.Timedelta(days=WARMUP_DAYS)
     for code, close in sorted(market.index_closes().items()):
         since = max(wanted, pd.Timestamp(INDEX_SINCE[code]))
@@ -480,7 +481,7 @@ def init(C):
     init_with(C, globals())
 
 
-REQUIRED_CALLS = ['get_market_data_ex', 'get_divid_factors', 'get_stock_list_in_sector',
+REQUIRED_CALLS = ['get_market_data_ex', 'get_divid_factors', 'get_financial_data', 'get_stock_list_in_sector',
                   'get_bar_timetag', 'get_full_tick', 'is_last_bar']
 
 

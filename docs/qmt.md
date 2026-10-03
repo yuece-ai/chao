@@ -51,9 +51,10 @@ nix develop --command python scripts/bundle_qmt.py --config qmt/strategy.json --
 Before running:
 1. Download the data in QMT (数据管理): daily bars for 沪深A股 and the
    indices the enabled strategies read (for strategies 1–6: `000001.SH`,
-   `399001.SZ`, `399006.SZ`, `000688.SH`) and ex-rights data. Financial
-   data is not used. A live run requests the incremental daily download
-   itself each morning; refresh ex-rights data weekly by hand.
+   `399001.SZ`, `399006.SZ`, `000688.SH`), ex-rights data and financial
+   data (财务数据: FINANCE(1) reads the total-share history). A live run
+   requests the incremental daily download itself each morning; refresh
+   ex-rights and financial data weekly by hand.
 2. Paste `qmt/chao_strategy.py` into a QMT strategy.
 3. Set the main chart to daily (1d); the strategy refuses other periods.
 
@@ -155,12 +156,7 @@ To keep its report close, set QMT's backtest parameters as follows:
 - 复权方式 前复权;
 - start 2010-01-01.
 
-Three differences remain:
-- FINANCE(1) is today's total shares (`TotalVolume`) on every bar, because
-  the client returned no share history. TDX used the history, so measured
-  on the TDX data, strategies 1, 4 and 5 match 678/720, 1,823/1,846 and
-  5,305/5,370 rows instead of 720, 1,845 and 5,369; 2, 3 and 6 are unchanged.
-  Live runs read FINANCE(1) only on today's bar, where both agree;
+Two differences remain:
 - QMT's forward-adjusted prices are its own;
 - QMT applies T+1, so the three TDX trades bought and sold on the same bar
   (listed in the log) cannot be sold that day.
@@ -230,7 +226,7 @@ functions, variable conventions and usage notes.
 |---|---|
 | `get_market_data_ex(fields, codes, period='1d', end_time, count, dividend_type='none', fill_data=False, subscribe=False)` | `{code: DataFrame}` indexed by `'YYYYMMDD'`; `count=-1` is every bar up to `end_time`; `subscribe=False` reads local data only, so it must be downloaded first |
 | `get_divid_factors(code)` | `{epoch ms: [每股股利, 每股红股, 每股转增, 配股, 配股价, 是否股改, 除权系数]}`, amounts per share |
-| `get_instrument_detail(code)['TotalVolume']` | today's total shares, used as FINANCE(1) on every bar |
+| `get_financial_data(['CAPITALSTRUCTURE.total_capital'], [code], start, end, report_type='report_time')` | FINANCE(1): one stock over a range, DataFrame indexed by date, one column per field, in shares, keyed by the change date as TDX does (announce_time lags 1-10 days); needs 财务数据 with the share table (股本表) downloaded |
 | `get_instrument_detail(code)` (older clients: `get_instrumentdetail`) | `InstrumentName`; `UpStopPrice`/`DownStopPrice` are today's 涨停/跌停 prices; `get_stock_name` is slated for removal and returns GBK |
 | `get_stock_list_in_sector(sector)` | list of `'600000.SH'` codes |
 | `get_full_tick(codes)` | `{code: tick}` with `timetag`, `lastPrice`, `open`, `high`, `low`, `amount`; latest tick only, unusable in backtests |
@@ -315,7 +311,7 @@ Run these in order; each step's log is the evidence for the next.
    - Sync the Windows clock to Beijing time: every live step is timed by it.
    - In 数据管理, download daily bars for 沪深A股 and the four indices
      from 2008 on (a backtest wants about 400 days before its start), plus
-     ex-rights data.
+     ex-rights and financial data.
 2. **Startup.** Paste `qmt/chao_strategy.py` into a QMT strategy and run it
    on a daily 000001.SH chart. The first log lines show:
    - the Python, pandas and numpy versions;

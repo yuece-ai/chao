@@ -30,7 +30,7 @@ from chao.qfq import ExRights, forward_adjust
 BAR_FIELDS = ['open', 'high', 'low', 'close', 'amount']
 HISTORY_BARS = 400  # live: MA(250) plus REF lookback, with margin
 ALL_BARS = -1       # backtest: every local bar up to the backtest end
-SHARES_SINCE = '1990-01-01'  # today's total shares stand for every bar
+TOTAL_CAPITAL = 'CAPITALSTRUCTURE.total_capital'  # shares
 # Formula index code -> QMT code. TDX's 999999 is QMT's 000001.SH.
 QMT_INDEX = {'999999': '000001.SH', '399001': '399001.SZ', '399006': '399006.SZ',
              '000688': '000688.SH', '899050': '899050.BJ'}
@@ -159,6 +159,17 @@ def with_tick(frame, tick, day, amount_unit=1):
                         index=frame.index[keep].append(pd.DatetimeIndex([day])), columns=BAR_FIELDS)
 
 
+def share_steps(column):
+    """{YYYY-MM-DD: shares} at each change of a date-indexed share series."""
+    steps, previous = {}, None
+    for key, value in column.items():
+        value = float(value)
+        if value != previous:
+            steps[qmt_date(key).strftime('%Y-%m-%d')] = value
+            previous = value
+    return steps
+
+
 class Quote(NamedTuple):
     last: float
     ask: Optional[float]   # best ask, the buy price cage's reference
@@ -218,11 +229,11 @@ class QmtMarket(MarketData):
                                   first_price(tick.get('bidPrice')))
         return quotes
 
-    def latest_ex_rights(self):
-        """Latest ex-rights date read so far (or None). Total shares are
-        today's value, so they have no date to check."""
+    def latest_static_dates(self):
+        """Latest ex-rights date and share-capital date read so far (or None)."""
         events = [e.date for es in self._events.values() for e in es]
-        return max(events) if events else None
+        shares = [pd.Timestamp(d) for steps in self._shares.values() for d in steps]
+        return max(events) if events else None, max(shares) if shares else None
 
     def _read_events(self, symbol):
         started = time.time()
@@ -368,13 +379,24 @@ class QmtMarket(MarketData):
         return name_text(self.detail(symbol).get('InstrumentName', '')) or None
 
     def total_shares(self, symbol):
-        """Total shares for FINANCE(1): today's TotalVolume from the contract
-        details, for live runs and backtests alike. The client holds no share
-        history (get_financial_data returned all NaN); the TDX exports used
-        the history, so strategies 1, 4 and 5 miss a few backtest trades."""
+        """Total-share history for FINANCE(1), as TDX uses it: one stock over
+        a date range is a DataFrame indexed by date with one column per field
+        (shares). QMT returns a row per day; only the changes are kept. Needs
+        财务数据 downloaded with the share table (股本表).
+
+        report_time keys each value by its change date (m_timetag), as TDX's
+        FINANCE(1) does; announce_time keys it by the announcement, 1-10 days
+        later for 600000's conversions in October 2025."""
         if symbol not in self._shares:
-            shares = float(self.detail(symbol).get('TotalVolume') or 0)
-            self._shares[symbol] = {SHARES_SINCE: shares} if shares > 0 else {}
+            table = self.C.get_financial_data([TOTAL_CAPITAL], [to_qmt(symbol)], '19900101', '20991231',
+                                              report_type='report_time')
+            if isinstance(table, pd.DataFrame) and table.shape[1] == 1:
+                column = table.iloc[:, 0].dropna()
+            elif isinstance(table, pd.DataFrame) and table.empty:
+                column = pd.Series(dtype=float)
+            else:
+                raise MissingInput('unexpected get_financial_data result {!r}'.format(type(table)))
+            self._shares[symbol] = share_steps(column)
         return self._shares[symbol]
 
 
@@ -414,14 +436,24 @@ def probe(C, sectors, end_time, live, clock):
     expect(isinstance(factors, dict) and factors, 'get_divid_factors', factors,
            '{epoch ms: [7 per-share values]} with past dividends')
     divid_events(factors)  # raises on a wrong row shape
+    table = C.get_financial_data([TOTAL_CAPITAL], [PROBE_STOCK], '19900101', '20991231', report_type='report_time')
+    seen('get_financial_data', table)
+    expect(isinstance(table, pd.DataFrame) and table.shape[1] == 1 and not table.empty, 'get_financial_data',
+           table, 'a one-column DataFrame indexed by date')
+    qmt_date(table.index[-1])
+    known = table.iloc[:, 0].dropna()
+    expect(len(known) > 0, 'get_financial_data', table,
+           'total_capital values; all are NaN, so download 财务数据 in 数据管理 first')
+    steps = share_steps(known)
+    lines.append('probe total shares {}: {} changes; latest {} (TDX: 2025-10-15 32379677500, 2025-10-17 '
+                 '32693020000, 2025-10-24 33305770000, 2025-10-27 33305837500)'.format(
+                     PROBE_STOCK, len(steps), ', '.join('{} {:.0f}'.format(d, v) for d, v in sorted(steps.items())[-6:])))
     read = getattr(C, 'get_instrument_detail', None) or C.get_instrumentdetail
     detail = read(PROBE_STOCK)
     seen('get_instrument_detail', detail)
     expect(isinstance(detail, dict) and detail.get('InstrumentName') and 'UpStopPrice' in detail
            and 'DownStopPrice' in detail, 'get_instrument_detail', detail,
            'a dict with InstrumentName, UpStopPrice, DownStopPrice')
-    expect(float(detail.get('TotalVolume') or 0) > 0, 'get_instrument_detail', detail,
-           'TotalVolume, the total shares FINANCE(1) reads')
     for sector in sectors:
         codes = C.get_stock_list_in_sector(sector)
         seen('get_stock_list_in_sector ' + sector, len(codes or []))

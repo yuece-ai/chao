@@ -52,9 +52,14 @@ class FakeContextInfo:
 
     def get_instrument_detail(self, code):
         down, up = self.limits.get(code, (None, None))
-        shares = self.shares.get(code, pd.Series(dtype=float)).dropna()
         return {'InstrumentID': code[:6], 'InstrumentName': self.names.get(code, ''),
-                'DownStopPrice': down, 'UpStopPrice': up, 'TotalVolume': shares.iloc[-1] if len(shares) else 0}
+                'DownStopPrice': down, 'UpStopPrice': up}
+
+    def get_financial_data(self, fields, codes, start, end, report_type):
+        # One stock over a date range: DataFrame indexed by date, one column per field.
+        assert fields == ['CAPITALSTRUCTURE.total_capital'] and report_type == 'report_time'
+        shares = self.shares.get(codes[0], pd.Series(dtype=float))
+        return pd.DataFrame({fields[0]: shares})
 
     def get_stock_list_in_sector(self, sector):
         return self.sectors.get(sector, [])
